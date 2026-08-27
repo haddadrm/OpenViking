@@ -735,6 +735,7 @@ The final output of the model must strictly follow the JSON Schema format shown 
         upsert_operations: List[ResolvedOperation] = []
         delete_file_contents: List[MemoryFile] = []
         errors: List[str] = []
+        invalid_reference_page_ids: set[int] = set()
 
         role_scope = self._isolation_handler.get_read_scope()
         page_id_map = getattr(self._extract_context, "page_id_map", None)
@@ -813,6 +814,7 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         old_content = self.context_provider.read_file_contents.get(resolved_uri)
                         belongs_to_schema = self._uri_belongs_to_schema(resolved_uri, schema)
                         if belongs_to_schema is False:
+                            invalid_reference_page_ids.add(requested_page_id)
                             existing_memory_type = self._memory_type_for_uri(resolved_uri)
                             resolved_op.resolution_skip = MemoryOperationSkip(
                                 reason_code=MemoryOperationSkipCode.PAGE_ID_TYPE_MISMATCH,
@@ -868,6 +870,14 @@ The final output of the model must strictly follow the JSON Schema format shown 
             replacement_page_id = delete_id.replacement_page_id
             replacement_uri = None
             if replacement_page_id is not None:
+                if replacement_page_id in invalid_reference_page_ids:
+                    logger.warning(
+                        "Skipping delete with type-mismatched replacement page_id: "
+                        "delete_page_id=%s, replacement_page_id=%s",
+                        delete_id.delete_page_id,
+                        delete_id.replacement_page_id,
+                    )
+                    continue
                 replacement_page_id, ambiguous = self._normalize_page_id_reference(
                     replacement_page_id,
                     page_id_assignments,
@@ -893,6 +903,13 @@ The final output of the model must strictly follow the JSON Schema format shown 
                 delete_replacements[delete_uri] = replacement_uri
 
         raw_links = getattr(operations, "links", None) or []
+        if invalid_reference_page_ids:
+            raw_links = [
+                link
+                for link in raw_links
+                if link.f not in invalid_reference_page_ids
+                and link.t not in invalid_reference_page_ids
+            ]
         raw_links = self._normalize_operation_links(
             raw_links,
             page_id_assignments,

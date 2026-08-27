@@ -168,6 +168,77 @@ class TestResolveOperations:
         isolation_handler.calculate_memory_uris.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_type_mismatched_page_id_is_rejected_from_links_and_replacements(self):
+        entity_schema = MemoryTypeSchema(
+            memory_type="entities",
+            directory="viking://user/{{ user_space }}/memories/entities",
+            filename_template="{{ name }}.md",
+            fields=[],
+        )
+        experience_schema = MemoryTypeSchema(
+            memory_type="experiences",
+            directory="viking://user/{{ user_space }}/memories/experiences",
+            filename_template="{{ experience_name }}.md",
+            fields=[],
+        )
+        profile_uri = "viking://user/alice/memories/profile.md"
+        old_entity_uri = "viking://user/alice/memories/entities/old-project.md"
+        experience_uri = "viking://user/alice/memories/experiences/trip.md"
+        page_id_map = PageIdMap()
+        assert page_id_map.get_page_id(profile_uri) == 1
+        assert page_id_map.get_page_id(old_entity_uri) == 2
+
+        context_provider = Mock()
+        context_provider.get_memory_schemas.return_value = [entity_schema, experience_schema]
+        context_provider.read_file_contents = {
+            profile_uri: MemoryFile(uri=profile_uri, memory_type="profile", content="profile"),
+            old_entity_uri: MemoryFile(
+                uri=old_entity_uri,
+                memory_type="entities",
+                content="old entity",
+            ),
+        }
+        isolation_handler = Mock()
+        isolation_handler.get_read_scope.return_value = None
+        isolation_handler.fill_identity_fields.side_effect = lambda item, **kwargs: item
+        isolation_handler.render_schema_directories.side_effect = lambda schema: [
+            schema.directory.replace("{{ user_space }}", "alice")
+        ]
+        isolation_handler.calculate_memory_uris.return_value = [experience_uri]
+
+        loop = ExtractLoop(
+            vlm=Mock(model="test-model"),
+            viking_fs=Mock(),
+            context_provider=context_provider,
+            isolation_handler=isolation_handler,
+        )
+        loop._extract_context = SimpleNamespace(page_id_map=page_id_map)
+        loop._link_enabled = True
+
+        operations, raw_links = await loop.resolve_operations(
+            AttrDict(
+                entities=[{"page_id": 1, "name": "wrong-project"}],
+                experiences=[{"page_id": 100, "experience_name": "trip"}],
+                links=[WikiLink(f=1, t=100, link_type="related_to", match_text=None)],
+                delete_ids=[{"delete_page_id": 2, "replacement_page_id": 1}],
+            )
+        )
+
+        mismatched_operation = operations.upsert_operations[0]
+        assert mismatched_operation.uris == []
+        assert mismatched_operation.resolution_skip is not None
+        assert (
+            mismatched_operation.resolution_skip.reason_code
+            == MemoryOperationSkipCode.PAGE_ID_TYPE_MISMATCH
+        )
+        assert raw_links == []
+        assert operations.delete_file_contents == []
+        assert operations.delete_replacements == {}
+
+        await loop.finalize_operations(operations, raw_links)
+        assert operations.resolved_links == []
+
+    @pytest.mark.asyncio
     async def test_existing_page_id_uses_path_when_metadata_is_dirty(self):
         schema = MemoryTypeSchema(
             memory_type="profile",
