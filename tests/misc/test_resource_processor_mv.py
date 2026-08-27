@@ -115,6 +115,64 @@ def _patch_viking_fs(monkeypatch, fake_fs):
 
 
 @pytest.mark.asyncio
+async def test_resource_processor_rejects_directory_when_every_file_failed(monkeypatch):
+    from openviking.utils.resource_processor import ResourceProcessor
+
+    fake_fs = _FakeVikingFS()
+    monkeypatch.setattr(
+        "openviking.utils.resource_processor.get_current_telemetry",
+        lambda: _DummyTelemetry(),
+    )
+    _patch_viking_fs(monkeypatch, fake_fs)
+
+    failed_files = [
+        {
+            "path": "native.pdf",
+            "parser": "PDFParser",
+            "error": "native parser rejected file",
+        },
+        {
+            "path": "remote.pdf",
+            "parser": "UnderstandingAPI",
+            "file_id": "file-1",
+            "response_id": "response-1",
+            "error": "remote parser rejected file",
+        },
+    ]
+    rp = ResourceProcessor(vikingdb=_DummyVikingDB(), media_storage=None)
+    rp._get_media_processor = MagicMock()
+    rp._get_media_processor.return_value.process = AsyncMock(
+        return_value=SimpleNamespace(
+            temp_dir_path="viking://temp/empty-directory",
+            source_path="directory.zip",
+            # Local directories arrive through temp-upload as ZIP files. ZipParser
+            # preserves DirectoryParser's aggregate metadata while changing this
+            # outer format marker to "zip".
+            source_format="zip",
+            meta={
+                "file_count": 0,
+                "total_processable": 2,
+                "processed_files": [],
+                "failed_files": failed_files,
+            },
+            warnings=[],
+        )
+    )
+    rp.tree_builder.finalize_from_temp = AsyncMock()
+
+    result = await rp.process_resource(path="directory.zip", ctx=object(), build_index=True)
+
+    assert result["status"] == "error"
+    assert result["meta"]["failed_files"] == failed_files
+    assert "all 2 processable file(s) failed" in result["errors"][0]
+    assert "native.pdf: native parser rejected file" in result["errors"][0]
+    assert "remote.pdf (file_id=file-1, response_id=response-1)" in result["errors"][0]
+    assert fake_fs.delete_temp_calls == [("viking://temp/empty-directory", None)]
+    assert fake_fs.persist_calls == []
+    rp.tree_builder.finalize_from_temp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resource_processor_first_add_summarizes_from_committed_uri(monkeypatch):
     from openviking.utils.resource_processor import ResourceProcessor
 

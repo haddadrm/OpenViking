@@ -350,7 +350,12 @@ Provider 和密钥管理配置见[加密指南](../guides/08-encryption.md)。
     "excel": {},
     "html": {},
     "text": {},
-    "directory": {},
+    "directory": {
+      "preserve_structure": true,
+      "max_files": 1000,
+      "max_depth": 10,
+      "max_concurrent": 4
+    },
     "feishu": {
       "domain": "https://open.feishu.cn",
       "max_rows_per_sheet": 1000,
@@ -361,6 +366,14 @@ Provider 和密钥管理配置见[加密指南](../guides/08-encryption.md)。
   }
 }
 ```
+
+`parsers.directory.max_concurrent` 由服务事件循环中的所有目录导入共享。默认值为
+`4` 时，单个目录可以并发执行 4 个 Understanding 任务；多个目录同时导入时，合计仍最多
+执行 4 个。
+
+客户端导入本地目录时，完整目录 ZIP 受 `/resources/temp_upload` 上传大小限制。ZIP
+解压后，`DirectoryParser` 不再设置统一的单文件字节限制；每个入选文件遵循对应内置
+Parser 或 Understanding API 后端自身的限制和上传行为。
 
 | 配置项 | 作用 |
 |---|---|

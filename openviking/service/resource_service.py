@@ -51,7 +51,7 @@ from openviking.server.user_config import (
 )
 from openviking.storage.queuefs import QueueManager, get_queue_manager
 from openviking.storage.queuefs.add_resource_msg import AddResourcePhase
-from openviking.storage.viking_fs import VikingFS
+from openviking.storage.viking_fs import LS_ALL_NODES, VikingFS
 from openviking.storage.vikingdb_manager import VikingDBManager
 from openviking.telemetry import get_current_telemetry, register_telemetry, unregister_telemetry
 from openviking.telemetry.request_wait_tracker import get_request_wait_tracker
@@ -470,6 +470,43 @@ class ResourceService:
             if inspect.isawaitable(result):
                 await result
 
+    async def _cleanup_reserved_target_if_empty(
+        self,
+        *,
+        root_uri: str,
+        ctx: RequestContext,
+        resource_lock: Dict[str, Any],
+    ) -> bool:
+        """Remove a newly reserved target only while it is still empty."""
+        try:
+            if not await self._viking_fs.exists(root_uri, ctx=ctx):
+                return True
+            stat = await self._viking_fs.stat(root_uri, ctx=ctx)
+            if not isinstance(stat, dict) or not stat.get("isDir"):
+                return False
+            entries = await self._viking_fs.ls(
+                root_uri,
+                show_all_hidden=True,
+                node_limit=LS_ALL_NODES,
+                ctx=ctx,
+            )
+            if any(entry.get("name") not in {None, "", ".", ".."} for entry in entries):
+                return False
+            await self._viking_fs.rm(
+                root_uri,
+                recursive=True,
+                ctx=ctx,
+                lease_ref=resource_lock,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[ResourceService] Failed to clean empty reserved target %s: %s",
+                root_uri,
+                exc,
+            )
+            return False
+
     async def close_background_tasks(self) -> None:
         """Cancel in-flight connector monitoring tasks during service shutdown."""
         if not self._background_tasks:
@@ -488,6 +525,7 @@ class ResourceService:
         resource_lock: Optional[Dict[str, Any]] = None,
         task_auth: Optional[Dict[str, Any]] = None,
         on_enqueued: Optional[Callable[[], None]] = None,
+        on_failed_with_lock: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> Any:
         """Persist a job and fully own the passed lock until handoff or release completes."""
         from openviking.service.task_tracker import get_task_tracker
@@ -521,6 +559,8 @@ class ResourceService:
             )
         except BaseException:
             if resource_lock is not None:
+                if on_failed_with_lock is not None:
+                    await on_failed_with_lock(resource_lock)
                 await self._release_lock_ref(resource_lock)
             if task is not None and not enqueued:
                 await tracker.fail(
@@ -600,32 +640,51 @@ class ResourceService:
                 from openviking.parse.understanding_api import PREPARED_RESPONSE_ID_ARG
 
                 internal_kwargs[PREPARED_RESPONSE_ID_ARG] = msg.understanding_response_id
-            result = await self._execute_resource_ingestion(
-                path=msg.path,
-                ctx=ctx,
-                to=target_uri,
-                parent=parent_uri,
-                to_is_directory=msg.to_is_directory,
-                reason=msg.reason,
-                instruction=msg.instruction,
-                defer_post_processing=False,
-                timeout=msg.timeout,
-                build_index=msg.build_index,
-                summarize=msg.summarize,
-                processing_mode=msg.processing_mode,
-                parse_mode=msg.parse_mode,
-                watch_interval=msg.watch_interval,
-                manage_watch=not msg.skip_watch_management,
-                tags=msg.tags,
-                tag_mode=msg.tag_mode,
-                allow_local_path_resolution=msg.allow_local_path_resolution,
-                enforce_public_remote_targets=msg.enforce_public_remote_targets,
-                resource_lock=resource_lock,
-                stage_callback=stage_callback,
-                watch_auth_state=watch_auth_state,
-                prepared_resource=prepared_resource,
-                **internal_kwargs,
-            )
+            try:
+                result = await self._execute_resource_ingestion(
+                    path=msg.path,
+                    ctx=ctx,
+                    to=target_uri,
+                    parent=parent_uri,
+                    to_is_directory=msg.to_is_directory,
+                    reason=msg.reason,
+                    instruction=msg.instruction,
+                    defer_post_processing=False,
+                    timeout=msg.timeout,
+                    build_index=msg.build_index,
+                    summarize=msg.summarize,
+                    processing_mode=msg.processing_mode,
+                    parse_mode=msg.parse_mode,
+                    watch_interval=msg.watch_interval,
+                    manage_watch=not msg.skip_watch_management,
+                    tags=msg.tags,
+                    tag_mode=msg.tag_mode,
+                    allow_local_path_resolution=msg.allow_local_path_resolution,
+                    enforce_public_remote_targets=msg.enforce_public_remote_targets,
+                    resource_lock=resource_lock,
+                    stage_callback=stage_callback,
+                    watch_auth_state=watch_auth_state,
+                    prepared_resource=prepared_resource,
+                    **internal_kwargs,
+                )
+            except BaseException:
+                if msg.cleanup_empty_target_on_failure and resource_lock is not None:
+                    await self._cleanup_reserved_target_if_empty(
+                        root_uri=msg.root_uri,
+                        ctx=ctx,
+                        resource_lock=resource_lock,
+                    )
+                raise
+            if (
+                result.get("status") == "error"
+                and msg.cleanup_empty_target_on_failure
+                and resource_lock is not None
+            ):
+                await self._cleanup_reserved_target_if_empty(
+                    root_uri=msg.root_uri,
+                    ctx=ctx,
+                    resource_lock=resource_lock,
+                )
             if msg.staged_source is not None:
                 result["source_path"] = msg.source_path
             stage_result = stage_callback("processing_queue")
@@ -915,7 +974,12 @@ class ResourceService:
         defer_target_resolution = False
         staged_enqueued = False
         try:
-            root_uri, resource_lock, defer_target_resolution = await self._plan_source_job_target(
+            (
+                root_uri,
+                resource_lock,
+                defer_target_resolution,
+                cleanup_empty_target_on_failure,
+            ) = await self._plan_source_job_target(
                 path=plan.path,
                 ctx=ctx,
                 to=to,
@@ -970,6 +1034,7 @@ class ResourceService:
                 to_is_directory=planned_to_is_directory,
                 args=plan.processor_args,
                 defer_target_resolution=defer_target_resolution,
+                cleanup_empty_target_on_failure=cleanup_empty_target_on_failure,
                 understanding_response_id=plan.understanding_response_id,
             )
 
@@ -984,12 +1049,22 @@ class ResourceService:
             )
             enqueue_lock = resource_lock
             resource_lock = None
+
+            async def cleanup_enqueue_failure(lock: Dict[str, Any]) -> None:
+                if cleanup_empty_target_on_failure:
+                    await self._cleanup_reserved_target_if_empty(
+                        root_uri=root_uri,
+                        ctx=ctx,
+                        resource_lock=lock,
+                    )
+
             task = await self._enqueue_add_resource_job(
                 msg,
                 queue_name=queue_name,
                 resource_lock=enqueue_lock,
                 task_auth=plan.task_auth,
                 on_enqueued=(transfer_staged_source if plan.staged_source is not None else None),
+                on_failed_with_lock=cleanup_enqueue_failure,
             )
         except BaseException:
             if resource_lock is not None:
@@ -1013,7 +1088,8 @@ class ResourceService:
         create_parent: bool,
         source_info: _ResourceSourceInfo,
         defer_candidate_resolution: bool,
-    ) -> tuple[str, Optional[Dict[str, Any]], bool]:
+    ) -> tuple[str, Optional[Dict[str, Any]], bool, bool]:
+        """Resolve the target and track ownership of a newly reserved empty path."""
         if not self._resource_processor or not self._viking_fs:
             raise NotInitializedError("ResourceProcessor")
 
@@ -1030,20 +1106,25 @@ class ResourceService:
             create_parent=create_parent,
         )
         if candidate_uri and defer_candidate_resolution:
-            return root_uri, None, True
+            return root_uri, None, True, False
         if candidate_uri:
             root_uri, resource_lock = await self._resource_processor.reserve_unique_candidate(
                 candidate_uri=candidate_uri,
                 ctx=ctx,
             )
-            return root_uri, resource_lock, False
+            return root_uri, resource_lock, False, True
 
+        # A tree lock may materialize an empty directory marker, so ownership
+        # must be recorded before acquiring it. The zero-timeout lock still
+        # rejects compliant concurrent writers, and cleanup rechecks that the
+        # target is empty before deleting it.
+        target_preexisting = await self._viking_fs.exists(root_uri, ctx=ctx)
         dst_path = self._viking_fs._uri_to_path(root_uri, ctx=ctx)
         resource_lock = await self._viking_fs._async_agfs.pathlock_acquire_tree(
             dst_path,
             timeout_secs=0.0,
         )
-        return root_uri, resource_lock, False
+        return root_uri, resource_lock, False, not target_preexisting
 
     @staticmethod
     def _target_doc_name(

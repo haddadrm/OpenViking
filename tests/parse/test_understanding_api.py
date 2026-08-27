@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openviking.parse.understanding_api import UnderstandingAPI
+from openviking.parse.understanding_api import UnderstandingAPI, UnderstandingAPIError
 
 
 @pytest.mark.asyncio
@@ -68,6 +68,68 @@ async def test_submit_file_returns_response_id(tmp_path):
     assert response_id == "response-1"
     api._create_file.assert_awaited_once_with(local_path=source)
     api._create_response_for_file.assert_awaited_once_with(file_id="file-1")
+
+
+@pytest.mark.asyncio
+async def test_file_above_simple_limit_requires_resumable_upload(tmp_path):
+    source = tmp_path / "large.pdf"
+    source.write_bytes(b"123456789")
+    api = UnderstandingAPI.__new__(UnderstandingAPI)
+    api._upload_simple_max_bytes = 8
+    api._enable_resumable_upload = False
+
+    with pytest.raises(ValueError, match="size=9, upload_simple_max_bytes=8"):
+        await api._create_file(local_path=source)
+
+
+@pytest.mark.asyncio
+async def test_file_above_simple_limit_uses_multipart_when_enabled(tmp_path):
+    source = tmp_path / "large.pdf"
+    source.write_bytes(b"123456789")
+    api = UnderstandingAPI.__new__(UnderstandingAPI)
+    api._upload_simple_max_bytes = 8
+    api._enable_resumable_upload = True
+    api._multipart_create_file = AsyncMock(return_value={"id": "file-1"})
+
+    result = await api._create_file(local_path=source)
+
+    assert result == {"id": "file-1"}
+    api._multipart_create_file.assert_awaited_once_with(source)
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_preserves_observed_remote_ids(monkeypatch, tmp_path):
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"%PDF-1.7")
+    api = UnderstandingAPI.__new__(UnderstandingAPI)
+    api._video_exts = {"mp4"}
+    api._audio_exts = {"mp3"}
+    api._image_exts = {"png"}
+
+    monkeypatch.setattr(api, "_create_file", AsyncMock(return_value={"id": "file-1"}))
+    monkeypatch.setattr(
+        api,
+        "_create_response_for_file",
+        AsyncMock(return_value={"id": "response-1"}),
+    )
+    monkeypatch.setattr(
+        api,
+        "_poll_response",
+        AsyncMock(side_effect=RuntimeError("remote parse failed")),
+    )
+
+    with pytest.raises(UnderstandingAPIError, match="remote parse failed") as exc_info:
+        await api.parse(source, source_name="original.pdf")
+
+    assert exc_info.value.meta == {
+        "doc_name": "original",
+        "doc_type": "pdf",
+        "source_name": "original.pdf",
+        "file_name": "report.pdf",
+        "file_id": "file-1",
+        "response_id": "response-1",
+    }
+    assert "response-1" in str(exc_info.value)
 
 
 async def _return(value):

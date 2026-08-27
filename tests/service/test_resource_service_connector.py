@@ -1377,7 +1377,7 @@ async def test_native_git_nested_auth_is_owned_by_durable_task(
         )
     )
     service._plan_source_job_target = AsyncMock(
-        return_value=("viking://resources/private", None, False)
+        return_value=("viking://resources/private", None, False, False)
     )
     service._execute_resource_ingestion = AsyncMock(
         side_effect=AssertionError("Git source work must run in the queue worker")
@@ -1426,7 +1426,7 @@ async def test_native_git_nested_auth_watch_is_copied_from_task_state_by_worker(
         )
     )
     service._plan_source_job_target = AsyncMock(
-        return_value=("viking://resources/private", None, False)
+        return_value=("viking://resources/private", None, False, False)
     )
     service._enqueue_add_resource_job = AsyncMock(
         return_value=SimpleNamespace(task_id="task-private")
@@ -1469,7 +1469,7 @@ async def test_native_git_watch_refresh_queues_with_restored_task_auth(
         )
     )
     service._plan_source_job_target = AsyncMock(
-        return_value=("viking://resources/private", None, False)
+        return_value=("viking://resources/private", None, False, False)
     )
     service._enqueue_add_resource_job = AsyncMock(
         return_value=SimpleNamespace(task_id="task-refresh")
@@ -1624,7 +1624,7 @@ async def test_add_resource_falls_back_for_shared_source_with_parent(
         )
     )
     service._plan_source_job_target = AsyncMock(
-        return_value=("viking://resources/repo/repo", None, False)
+        return_value=("viking://resources/repo/repo", None, False, False)
     )
     service._enqueue_add_resource_job = AsyncMock(
         return_value=SimpleNamespace(task_id="task-standard")

@@ -382,6 +382,7 @@ def test_add_resource_message_round_trips_internal_fields():
         user_id="user-1",
         role="user",
         defer_target_resolution=True,
+        cleanup_empty_target_on_failure=True,
         understanding_response_id="response-1",
     )
 
@@ -390,6 +391,7 @@ def test_add_resource_message_round_trips_internal_fields():
     assert restored.args == {}
     assert "feishu_access_token" not in json.dumps(restored.to_dict())
     assert restored.defer_target_resolution is True
+    assert restored.cleanup_empty_target_on_failure is True
     assert restored.understanding_response_id == "response-1"
     assert restored.job_phase is AddResourcePhase.SOURCE
 
@@ -474,7 +476,7 @@ async def test_uat_producer_payload_reaches_worker_without_persisting_token(
         return SimpleNamespace(source_name=preflight_name, source_format="file")
 
     async def plan_source_job_target(*, source_info, **_kwargs):
-        return root_uri, None, source_info.source_name is None
+        return root_uri, None, source_info.source_name is None, False
 
     monkeypatch.setattr(
         "openviking.parse.accessors.feishu_accessor.FeishuAccessor.preflight_source",
@@ -561,7 +563,7 @@ async def test_local_source_job_stages_snapshot_before_enqueue(monkeypatch, tmp_
         skill_processor=SimpleNamespace(),
     )
     service._enqueue_add_resource_job = AsyncMock(return_value=SimpleNamespace(task_id="task-1"))
-    service._plan_source_job_target = AsyncMock(return_value=(root_uri, None, False))
+    service._plan_source_job_target = AsyncMock(return_value=(root_uri, None, False, False))
     monkeypatch.setattr(
         service,
         "_connector_delegate",
@@ -679,6 +681,10 @@ async def test_uat_producer_cancellation_respects_queue_ownership(
 
     service = ResourceService(
         viking_fs=SimpleNamespace(
+            exists=AsyncMock(return_value=False),
+            stat=AsyncMock(return_value={"isDir": True}),
+            ls=AsyncMock(return_value=[]),
+            rm=AsyncMock(),
             _uri_to_path=lambda _uri, ctx: "/resources/fixed",
             _async_agfs=agfs,
         ),

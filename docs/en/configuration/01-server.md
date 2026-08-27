@@ -350,7 +350,12 @@ Parsers live under `parsers`:
     "excel": {},
     "html": {},
     "text": {},
-    "directory": {},
+    "directory": {
+      "preserve_structure": true,
+      "max_files": 1000,
+      "max_depth": 10,
+      "max_concurrent": 4
+    },
     "feishu": {
       "domain": "https://open.feishu.cn",
       "max_rows_per_sheet": 1000,
@@ -361,6 +366,17 @@ Parsers live under `parsers`:
   }
 }
 ```
+
+`parsers.directory.max_concurrent` is shared by all directory imports in the
+server event loop. With the default value `4`, one directory can run four
+Understanding jobs concurrently, while multiple concurrent directories still
+run at most four in total.
+
+When a local directory is added through the client, the complete directory ZIP is
+subject to the `/resources/temp_upload` size limit. After extraction,
+`DirectoryParser` does not impose a common per-file byte limit. Each selected file
+follows the limits and upload behavior of its assigned built-in parser or
+Understanding API backend.
 
 | Setting | Purpose |
 |---|---|

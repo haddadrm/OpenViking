@@ -44,6 +44,29 @@ logger = get_logger(__name__)
 PREPARED_RESPONSE_ID_ARG = "understanding_response_id"
 
 
+class UnderstandingAPIError(RuntimeError):
+    """Parser API failure carrying the remote identifiers already observed."""
+
+    def __init__(self, message: str, meta: Optional[Dict[str, Any]] = None):
+        self.meta = dict(meta or {})
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        message = super().__str__()
+        fields = (
+            "doc_name",
+            "doc_type",
+            "source_name",
+            "file_name",
+            "file_id",
+            "response_id",
+        )
+        compact = {key: self.meta[key] for key in fields if self.meta.get(key)}
+        if not compact:
+            return message
+        return f"{message} meta={json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
+
+
 class UnderstandingAPI(BaseParser):
     """
     UnderstandingAPI: Third-party parse client.
@@ -143,59 +166,72 @@ class UnderstandingAPI(BaseParser):
         doc_name = Path(effective_name).stem or "resource"
         doc_type = doc_type or "unknown"
 
-        task_meta: Dict[str, Any] = {}
+        task_meta: Dict[str, Any] = {"doc_name": doc_name, "doc_type": doc_type}
+        source_name = kwargs.get("source_name")
+        if isinstance(source_name, str) and source_name:
+            task_meta["source_name"] = source_name
+        if local_path is not None:
+            task_meta["file_name"] = local_path.name
 
-        if prepared_response_id:
-            response_id = prepared_response_id
-        elif url is None and local_path is not None:
-            file_obj = await self._create_file(local_path=local_path)
-            file_id = file_obj.get("id")
-            if not file_id:
-                raise RuntimeError(
-                    f"files api missing file_id: {self._safe_error_summary(file_obj)}"
-                )
-            task_meta["file_id"] = file_id
-            response_obj = await self._create_response_for_file(file_id=file_id)
-        else:
-            if url is None:
-                raise RuntimeError("missing url for url mode")
-            response_obj = await self._create_response_for_url(
-                url=url,
-                doc_type=doc_type,
-                lark_file=lark_file if is_feishu_url else None,
-            )
-
-        if not prepared_response_id:
-            response_id_value = response_obj.get("id")
-            if not response_id_value:
-                raise RuntimeError(
-                    f"responses api missing id: {self._safe_error_summary(response_obj)}"
-                )
-            response_id = str(response_id_value)
-        task_meta["response_id"] = response_id
-
-        response_obj = await self._poll_response(response_id=response_id)
-        zip_url = self._extract_zip_url(response_obj)
-        if not zip_url:
-            raise RuntimeError(
-                f"understanding result missing zip_url: {self._safe_error_summary(response_obj)}"
-            )
-
-        zip_path = await self._download_zip(zip_url)
         try:
-            if is_feishu_url and not display_name:
-                archive_root = self._single_zip_root_name(zip_path)
-                if archive_root:
-                    doc_name = archive_root
-            temp_dir_path = await self._unpack_zip_to_temp_dir(
-                zip_path=zip_path,
-                resource_name=doc_name,
-            )
-        finally:
+            if prepared_response_id:
+                response_id = prepared_response_id
+            elif url is None and local_path is not None:
+                file_obj = await self._create_file(local_path=local_path)
+                file_id_value = file_obj.get("id")
+                if not file_id_value:
+                    raise RuntimeError(
+                        f"files api missing file_id: {self._safe_error_summary(file_obj)}"
+                    )
+                file_id = str(file_id_value)
+                task_meta["file_id"] = file_id
+                response_obj = await self._create_response_for_file(file_id=file_id)
+            else:
+                if url is None:
+                    raise RuntimeError("missing url for url mode")
+                response_obj = await self._create_response_for_url(
+                    url=url,
+                    doc_type=doc_type,
+                    lark_file=lark_file,
+                )
+
+            if not prepared_response_id:
+                response_id_value = response_obj.get("id")
+                if not response_id_value:
+                    raise RuntimeError(
+                        f"responses api missing id: {self._safe_error_summary(response_obj)}"
+                    )
+                response_id = str(response_id_value)
+            task_meta["response_id"] = response_id
+
+            response_obj = await self._poll_response(response_id=response_id)
+            zip_url = self._extract_zip_url(response_obj)
+            if not zip_url:
+                raise RuntimeError(
+                    "understanding result missing zip_url: "
+                    f"{self._safe_error_summary(response_obj)}"
+                )
+
+            zip_path = await self._download_zip(zip_url)
             try:
-                zip_path.unlink()
-            except Exception:
-                pass
+                if is_feishu_url and not display_name:
+                    archive_root = self._single_zip_root_name(zip_path)
+                    if archive_root:
+                        doc_name = archive_root
+                        task_meta["doc_name"] = doc_name
+                temp_dir_path = await self._unpack_zip_to_temp_dir(
+                    zip_path=zip_path,
+                    resource_name=doc_name,
+                )
+            finally:
+                try:
+                    zip_path.unlink()
+                except Exception:
+                    pass
+        except UnderstandingAPIError:
+            raise
+        except Exception as exc:
+            raise UnderstandingAPIError(str(exc), task_meta) from exc
 
         content_type = (
             "video"
@@ -230,7 +266,7 @@ class UnderstandingAPI(BaseParser):
             ),
             temp_dir_path=temp_dir_path,
             parser_name="UnderstandingAPI",
-            meta=task_meta,
+            meta={key: task_meta[key] for key in ("file_id", "response_id") if task_meta.get(key)},
         )
 
         logger.info("[UnderstandingAPI] done")
@@ -307,7 +343,9 @@ class UnderstandingAPI(BaseParser):
         return json.dumps(obj, ensure_ascii=False).encode("utf-8")
 
     def _auth_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+        }
         if extra:
             headers.update(extra)
         return headers
@@ -336,7 +374,9 @@ class UnderstandingAPI(BaseParser):
         if file_size > self._upload_simple_max_bytes:
             if not self._enable_resumable_upload:
                 raise ValueError(
-                    f"file too large ({file_size} bytes), enable parser_api.enable_resumable_upload to continue"
+                    f"file too large: size={file_size}, "
+                    f"upload_simple_max_bytes={self._upload_simple_max_bytes}; "
+                    "enable parser_api.enable_resumable_upload to continue"
                 )
             return await self._multipart_create_file(local_path)
 
