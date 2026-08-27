@@ -26,6 +26,7 @@ from openviking.session.memory.dataclass import (
 )
 from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
 from openviking.session.memory.merge_op import FieldType, MergeOp, PatchOp
+from openviking.session.memory.page_id_map import ResponsePageIdAllocator
 from openviking.session.memory.schema_model_generator import SchemaModelGenerator
 from openviking.session.memory.tools import (
     MEMORY_TOOLS_REGISTRY,
@@ -328,7 +329,6 @@ The final output of the model must strictly follow the JSON Schema format shown 
                 if resolution_issues and resolution_repair_count == 0:
                     resolution_repair_count += 1
                     pending_resolution_repair = (final_operations, raw_links)
-                    self._release_retryable_event_page_ids(final_operations)
                     max_iterations += 1
                     self._disable_tools_for_iteration = True
                     messages.append(
@@ -523,15 +523,6 @@ The final output of the model must strictly follow the JSON Schema format shown 
             and operation.resolution_skip.reason_code in _EVENT_RETRYABLE_RESOLUTION_SKIP_CODES
         )
 
-    def _release_retryable_event_page_ids(self, operations: ResolvedOperations) -> None:
-        page_id_map = getattr(self._extract_context, "page_id_map", None)
-        release_page_id = getattr(page_id_map, "release_new_page_id", None)
-        if not callable(release_page_id):
-            return
-        for operation in operations.upsert_operations:
-            if self._is_retryable_event_operation(operation):
-                release_page_id(operation.page_id)
-
     @classmethod
     def _event_resolution_repair_subset(
         cls,
@@ -632,7 +623,27 @@ The final output of the model must strictly follow the JSON Schema format shown 
         )
 
     @staticmethod
-    def _normalize_event_links(
+    def _normalize_page_id_reference(
+        raw_page_id: Optional[int],
+        page_id_assignments: Dict[int, List[int]],
+        page_id_map: Any,
+    ) -> Tuple[Optional[int], bool]:
+        """Return the normalized response ID and whether the reference is ambiguous."""
+        if raw_page_id is None:
+            return None, False
+        assigned_ids = page_id_assignments.get(raw_page_id, [])
+        if not assigned_ids:
+            return raw_page_id, False
+
+        unique_ids = list(dict.fromkeys(assigned_ids))
+        existing_uri = page_id_map.resolve(raw_page_id) if page_id_map else None
+        if len(unique_ids) != 1 or (existing_uri is not None and unique_ids[0] != raw_page_id):
+            return None, True
+        return unique_ids[0], False
+
+    @classmethod
+    def _normalize_operation_links(
+        cls,
         raw_links: List[WikiLink],
         page_id_assignments: Dict[int, List[int]],
         page_id_map: Any,
@@ -646,27 +657,78 @@ The final output of the model must strictly follow the JSON Schema format shown 
             ambiguous = False
             for field_name in ("f", "t"):
                 raw_page_id = getattr(link, field_name, None)
-                assigned_ids = page_id_assignments.get(raw_page_id, [])
-                if not assigned_ids:
-                    continue
-                unique_ids = list(dict.fromkeys(assigned_ids))
-                existing_uri = page_id_map.resolve(raw_page_id) if page_id_map else None
-                if len(unique_ids) != 1 or (
-                    existing_uri is not None and unique_ids[0] != raw_page_id
-                ):
+                normalized_page_id, is_ambiguous = cls._normalize_page_id_reference(
+                    raw_page_id,
+                    page_id_assignments,
+                    page_id_map,
+                )
+                if is_ambiguous:
                     ambiguous = True
                     break
-                updates[field_name] = unique_ids[0]
+                if normalized_page_id != raw_page_id:
+                    updates[field_name] = normalized_page_id
             if ambiguous:
                 logger.warning(
-                    "Skipping ambiguous memory link after event page_id normalization: "
-                    "f=%s, t=%s",
+                    "Skipping ambiguous memory link after page_id normalization: f=%s, t=%s",
                     link.f,
                     link.t,
                 )
                 continue
             normalized_links.append(link.model_copy(update=updates) if updates else link)
         return normalized_links
+
+    def _assign_response_page_ids(
+        self,
+        operations: Any,
+        schemas: List[Any],
+        page_id_map: Any,
+    ) -> Tuple[Dict[Tuple[int, int], int], Dict[int, List[int]]]:
+        """Assign unique IDs to new logical operations within one candidate response."""
+        entries: List[Tuple[int, int, Optional[int], bool]] = []
+        for schema_index, schema in enumerate(schemas):
+            value = getattr(operations, schema.memory_type, None)
+            if value is None:
+                continue
+            items = value if isinstance(value, list) else [value]
+            is_event = self._is_event_schema(schema)
+            for item_index, item in enumerate(items):
+                requested_page_id = dict(item).get("page_id")
+                entries.append((schema_index, item_index, requested_page_id, is_event))
+
+        assigned_page_ids: Dict[Tuple[int, int], int] = {}
+        page_id_assignments: Dict[int, List[int]] = {}
+        page_id_allocator = None
+
+        # Preserve non-Event behavior where possible. Events are always new and therefore
+        # allocate after every other memory type has claimed its response-local ID.
+        for event_phase in (False, True):
+            for schema_index, item_index, requested_page_id, is_event in entries:
+                if is_event != event_phase:
+                    continue
+                existing_uri = None
+                if requested_page_id is not None and page_id_map is not None:
+                    existing_uri = page_id_map.resolve(requested_page_id)
+                if not is_event and existing_uri is not None:
+                    page_id = requested_page_id
+                else:
+                    if page_id_allocator is None:
+                        allocator_factory = getattr(
+                            page_id_map,
+                            "new_page_id_allocator",
+                            None,
+                        )
+                        page_id_allocator = (
+                            allocator_factory()
+                            if callable(allocator_factory)
+                            else ResponsePageIdAllocator()
+                        )
+                    page_id = page_id_allocator.allocate(requested_page_id)
+
+                assigned_page_ids[(schema_index, item_index)] = page_id
+                if requested_page_id is not None:
+                    page_id_assignments.setdefault(requested_page_id, []).append(page_id)
+
+        return assigned_page_ids, page_id_assignments
 
     async def resolve_operations(self, operations) -> tuple[ResolvedOperations, List]:
         tracer.info(f"operations={JsonUtils.dumps(operations)}")
@@ -676,9 +738,14 @@ The final output of the model must strictly follow the JSON Schema format shown 
 
         role_scope = self._isolation_handler.get_read_scope()
         page_id_map = getattr(self._extract_context, "page_id_map", None)
-        event_page_id_assignments: Dict[int, List[int]] = {}
+        schemas = list(self.context_provider.get_memory_schemas(self.ctx))
+        assigned_page_ids, page_id_assignments = self._assign_response_page_ids(
+            operations,
+            schemas,
+            page_id_map,
+        )
 
-        for schema in self.context_provider.get_memory_schemas(self.ctx):
+        for schema_index, schema in enumerate(schemas):
             memory_type = schema.memory_type
             value = getattr(operations, memory_type, None)
             if value is None:
@@ -686,7 +753,7 @@ The final output of the model must strictly follow the JSON Schema format shown 
 
             items = value if isinstance(value, list) else [value]
 
-            for item in items:
+            for item_index, item in enumerate(items):
                 item_dict = dict(item)
                 item_dict["memory_type"] = memory_type
                 identity_resolution_skip = None
@@ -721,15 +788,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
                     identity_resolution_skip = None
 
                 requested_page_id = item_dict.pop("page_id", None)
-                page_id = requested_page_id
+                page_id = assigned_page_ids[(schema_index, item_index)]
                 is_event = self._is_event_schema(schema)
-                if is_event:
-                    if page_id_map is not None:
-                        page_id = page_id_map.allocate_new_page_id(requested_page_id)
-                    elif page_id is None or page_id < 100:
-                        page_id = 100
-                    if requested_page_id is not None:
-                        event_page_id_assignments.setdefault(requested_page_id, []).append(page_id)
                 resolved_op = ResolvedOperation(
                     old_memory_file_content=None,
                     memory_fields=item_dict,
@@ -747,8 +807,8 @@ The final output of the model must strictly follow the JSON Schema format shown 
                         operation=resolved_op,
                         extract_context=self._extract_context,
                     )
-                elif page_id is not None and page_id_map is not None:
-                    resolved_uri = page_id_map.resolve(page_id)
+                elif requested_page_id is not None and page_id_map is not None:
+                    resolved_uri = page_id_map.resolve(requested_page_id)
                     if resolved_uri:
                         old_content = self.context_provider.read_file_contents.get(resolved_uri)
                         belongs_to_schema = self._uri_belongs_to_schema(resolved_uri, schema)
@@ -805,24 +865,37 @@ The final output of the model must strictly follow the JSON Schema format shown 
             old_content = self.context_provider.read_file_contents.get(delete_uri)
             if not old_content:
                 continue
-            delete_file_contents.append(old_content)
-
             replacement_page_id = delete_id.replacement_page_id
-            if replacement_page_id is None:
-                continue
-            replacement_uri = page_id_map.resolve(replacement_page_id)
-            if not replacement_uri:
-                for op in upsert_operations:
-                    if op.page_id == replacement_page_id and op.uris:
-                        replacement_uri = op.uris[0]
-                        break
+            replacement_uri = None
+            if replacement_page_id is not None:
+                replacement_page_id, ambiguous = self._normalize_page_id_reference(
+                    replacement_page_id,
+                    page_id_assignments,
+                    page_id_map,
+                )
+                if ambiguous:
+                    logger.warning(
+                        "Skipping delete with ambiguous replacement page_id: "
+                        "delete_page_id=%s, replacement_page_id=%s",
+                        delete_id.delete_page_id,
+                        delete_id.replacement_page_id,
+                    )
+                    continue
+                replacement_uri = page_id_map.resolve(replacement_page_id)
+                if not replacement_uri:
+                    for op in upsert_operations:
+                        if op.page_id == replacement_page_id and op.uris:
+                            replacement_uri = op.uris[0]
+                            break
+
+            delete_file_contents.append(old_content)
             if replacement_uri and replacement_uri != delete_uri:
                 delete_replacements[delete_uri] = replacement_uri
 
         raw_links = getattr(operations, "links", None) or []
-        raw_links = self._normalize_event_links(
+        raw_links = self._normalize_operation_links(
             raw_links,
-            event_page_id_assignments,
+            page_id_assignments,
             page_id_map,
         )
         resolved = ResolvedOperations(
@@ -840,7 +913,6 @@ The final output of the model must strictly follow the JSON Schema format shown 
                     break
 
         return resolved, raw_links
-
 
     def _normalize_delete_ids(self, raw_delete_ids: List[Any]) -> List[DeleteId]:
         delete_ids: List[DeleteId] = []

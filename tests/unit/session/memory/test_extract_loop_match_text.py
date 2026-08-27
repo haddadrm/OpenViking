@@ -241,6 +241,171 @@ class TestResolveOperations:
         assert operation.uris == [trajectory_uri]
 
     @pytest.mark.asyncio
+    async def test_new_page_ids_are_unique_across_memory_types(self):
+        event_schema = self._event_schema()
+        profile_schema = MemoryTypeSchema(
+            memory_type="profile",
+            directory="viking://user/{{ user_space }}/memories",
+            filename_template="profile.md",
+            fields=[],
+        )
+        entity_schema = MemoryTypeSchema(
+            memory_type="entities",
+            directory="viking://user/{{ user_space }}/memories/entities",
+            filename_template="{{ name }}.md",
+            fields=[],
+        )
+        uris = {
+            "events": "viking://user/alice/memories/events/demo.md",
+            "profile": "viking://user/alice/memories/profile.md",
+            "entities": "viking://user/alice/memories/entities/target.md",
+        }
+        context_provider = Mock()
+        context_provider.get_memory_schemas.return_value = [
+            event_schema,
+            profile_schema,
+            entity_schema,
+        ]
+        context_provider.read_file_contents = {}
+        isolation_handler = Mock()
+        isolation_handler.get_read_scope.return_value = None
+        isolation_handler.fill_identity_fields.side_effect = lambda item, **kwargs: item
+        isolation_handler.calculate_memory_uris.side_effect = lambda **kwargs: [
+            uris[kwargs["memory_type_schema"].memory_type]
+        ]
+
+        loop = ExtractLoop(
+            vlm=Mock(model="test-model"),
+            viking_fs=Mock(),
+            context_provider=context_provider,
+            isolation_handler=isolation_handler,
+        )
+        loop._extract_context = SimpleNamespace(page_id_map=PageIdMap())
+        loop._link_enabled = True
+        raw_operations = AttrDict(
+            events=[{"event_name": "demo", "ranges": "0", "page_id": 100}],
+            profile=[{"summary": "profile", "page_id": 100}],
+            entities=[{"name": "target", "page_id": 101}],
+            links=[WikiLink(f=100, t=101, match_text=None)],
+        )
+
+        operations, raw_links = await loop.resolve_operations(raw_operations)
+        assert [operation.page_id for operation in operations.upsert_operations] == [102, 100, 101]
+        assert raw_links == []
+
+        repeated_operations, repeated_links = await loop.resolve_operations(raw_operations)
+        assert [operation.page_id for operation in repeated_operations.upsert_operations] == [
+            102,
+            100,
+            101,
+        ]
+        assert repeated_links == []
+
+        await loop.finalize_operations(operations, raw_links)
+        assert operations.resolved_links == []
+
+    @pytest.mark.asyncio
+    async def test_duplicate_non_event_page_ids_are_normalized(self):
+        profile_schema = MemoryTypeSchema(
+            memory_type="profile",
+            directory="viking://user/{{ user_space }}/memories",
+            filename_template="profile.md",
+            fields=[],
+        )
+        entity_schema = MemoryTypeSchema(
+            memory_type="entities",
+            directory="viking://user/{{ user_space }}/memories/entities",
+            filename_template="{{ name }}.md",
+            fields=[],
+        )
+        context_provider = Mock()
+        context_provider.get_memory_schemas.return_value = [profile_schema, entity_schema]
+        context_provider.read_file_contents = {}
+        isolation_handler = Mock()
+        isolation_handler.get_read_scope.return_value = None
+        isolation_handler.fill_identity_fields.side_effect = lambda item, **kwargs: item
+        isolation_handler.calculate_memory_uris.side_effect = lambda **kwargs: [
+            (
+                "viking://user/alice/memories/profile.md"
+                if kwargs["memory_type_schema"].memory_type == "profile"
+                else f"viking://user/alice/memories/entities/{kwargs['operation'].memory_fields['name']}.md"
+            )
+        ]
+
+        loop = ExtractLoop(
+            vlm=Mock(model="test-model"),
+            viking_fs=Mock(),
+            context_provider=context_provider,
+            isolation_handler=isolation_handler,
+        )
+        loop._extract_context = SimpleNamespace(page_id_map=PageIdMap())
+
+        operations, raw_links = await loop.resolve_operations(
+            AttrDict(
+                profile=[{"summary": "profile", "page_id": 100}],
+                entities=[
+                    {"name": "duplicate", "page_id": 100},
+                    {"name": "target", "page_id": 102},
+                ],
+                links=[WikiLink(f=100, t=102, match_text=None)],
+            )
+        )
+
+        assert [operation.page_id for operation in operations.upsert_operations] == [100, 101, 102]
+        assert raw_links == []
+
+    @pytest.mark.asyncio
+    async def test_delete_with_ambiguous_new_replacement_page_id_is_skipped(self):
+        profile_schema = MemoryTypeSchema(
+            memory_type="profile",
+            directory="viking://user/{{ user_space }}/memories",
+            filename_template="profile.md",
+            fields=[],
+        )
+        entity_schema = MemoryTypeSchema(
+            memory_type="entities",
+            directory="viking://user/{{ user_space }}/memories/entities",
+            filename_template="{{ name }}.md",
+            fields=[],
+        )
+        deleted_uri = "viking://user/alice/memories/entities/deleted.md"
+        deleted_file = MemoryFile(uri=deleted_uri, memory_type="entities", content="deleted")
+        page_id_map = PageIdMap()
+        assert page_id_map.get_page_id(deleted_uri) == 1
+        context_provider = Mock()
+        context_provider.get_memory_schemas.return_value = [profile_schema, entity_schema]
+        context_provider.read_file_contents = {deleted_uri: deleted_file}
+        isolation_handler = Mock()
+        isolation_handler.get_read_scope.return_value = None
+        isolation_handler.fill_identity_fields.side_effect = lambda item, **kwargs: item
+        isolation_handler.calculate_memory_uris.side_effect = lambda **kwargs: [
+            (
+                "viking://user/alice/memories/profile.md"
+                if kwargs["memory_type_schema"].memory_type == "profile"
+                else "viking://user/alice/memories/entities/replacement.md"
+            )
+        ]
+
+        loop = ExtractLoop(
+            vlm=Mock(model="test-model"),
+            viking_fs=Mock(),
+            context_provider=context_provider,
+            isolation_handler=isolation_handler,
+        )
+        loop._extract_context = SimpleNamespace(page_id_map=page_id_map)
+
+        operations, _ = await loop.resolve_operations(
+            AttrDict(
+                profile=[{"summary": "profile", "page_id": 100}],
+                entities=[{"name": "replacement", "page_id": 100}],
+                delete_ids=[{"delete_page_id": 1, "replacement_page_id": 100}],
+            )
+        )
+
+        assert operations.delete_file_contents == []
+        assert operations.delete_replacements == {}
+
+    @pytest.mark.asyncio
     async def test_existing_page_id_keeps_existing_uri_and_identity_fields(self):
         schema = MemoryTypeSchema(
             memory_type="entities",
@@ -367,11 +532,11 @@ class TestResolveOperations:
 
 
 class TestResolveLinksMultiUri:
-    def test_normalize_event_links_remaps_unregistered_low_page_id(self):
+    def test_normalize_operation_links_remaps_unregistered_low_page_id(self):
         page_id_map = PageIdMap()
         links = [WikiLink(f=5, t=7, match_text="event")]
 
-        normalized = ExtractLoop._normalize_event_links(
+        normalized = ExtractLoop._normalize_operation_links(
             links,
             {5: [100]},
             page_id_map,
@@ -381,13 +546,13 @@ class TestResolveLinksMultiUri:
         assert normalized[0].f == 100
         assert normalized[0].t == 7
 
-    def test_normalize_event_links_drops_collision_with_existing_page(self):
+    def test_normalize_operation_links_drops_collision_with_existing_page(self):
         page_id_map = PageIdMap()
         for index in range(5):
             page_id_map.get_page_id(f"viking://user/alice/memories/existing-{index}.md")
         links = [WikiLink(f=5, t=7, match_text="ambiguous")]
 
-        normalized = ExtractLoop._normalize_event_links(
+        normalized = ExtractLoop._normalize_operation_links(
             links,
             {5: [100]},
             page_id_map,

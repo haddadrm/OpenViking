@@ -58,37 +58,30 @@ class TestPageIdMap:
         assert pim.resolve(existing_id) == "viking://profile.md"
         assert pim.resolve(100) == "viking://profile.md"
 
-    def test_allocate_new_page_id_normalizes_low_requested_id(self):
+    def test_response_allocator_normalizes_low_requested_id(self):
         pim = PageIdMap()
         pim.get_page_id("viking://user/a/memories/profile.md")
+        allocator = pim.new_page_id_allocator()
 
-        assert pim.allocate_new_page_id(1) == 100
+        assert allocator.allocate(1) == 100
 
-    def test_allocate_new_page_id_preserves_available_new_id(self):
+    def test_response_allocator_preserves_available_new_id(self):
         pim = PageIdMap()
+        allocator = pim.new_page_id_allocator()
 
-        assert pim.allocate_new_page_id(105) == 105
-        assert pim.allocate_new_page_id(105) == 106
+        assert allocator.allocate(105) == 105
+        assert allocator.allocate(105) == 100
 
-    def test_allocate_new_page_id_skips_registered_and_reserved_ids(self):
-        pim = PageIdMap()
-        pim.register_new_page_id("viking://new-item", 100)
-
-        assert pim.allocate_new_page_id() == 101
-        assert pim.allocate_new_page_id() == 102
-
-    def test_release_new_page_id_allows_repair_to_reuse_reservation(self):
-        pim = PageIdMap()
-
-        assert pim.allocate_new_page_id(5) == 100
-        pim.release_new_page_id(100)
-
-        assert pim.allocate_new_page_id(100) == 100
-
-    def test_release_new_page_id_does_not_release_registered_id(self):
+    def test_response_allocator_skips_registered_and_allocated_ids(self):
         pim = PageIdMap()
         pim.register_new_page_id("viking://new-item", 100)
+        allocator = pim.new_page_id_allocator()
 
-        pim.release_new_page_id(100)
+        assert allocator.allocate(None) == 101
+        assert allocator.allocate(None) == 102
 
-        assert pim.allocate_new_page_id(100) == 101
+    def test_new_response_can_reuse_unregistered_page_id(self):
+        pim = PageIdMap()
+
+        assert pim.new_page_id_allocator().allocate(100) == 100
+        assert pim.new_page_id_allocator().allocate(100) == 100
