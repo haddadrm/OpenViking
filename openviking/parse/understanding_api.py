@@ -360,7 +360,27 @@ class UnderstandingAPI(BaseParser):
                 summary[key] = obj.get(key)
         err = obj.get("error")
         if isinstance(err, dict):
-            summary["error"] = {k: err.get(k) for k in ("type", "code", "message") if k in err}
+            summary["error"] = {
+                k: err.get(k) for k in ("type", "code", "message", "param") if k in err
+            }
+        # Failed Responses tasks carry the reason in output_text, not error.
+        output = obj.get("output")
+        if obj.get("status") == "failed" and isinstance(output, list):
+            texts = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "output_text":
+                        continue
+                    text = part.get("text")
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text)
+            if texts:
+                summary["output_text"] = texts
         return summary
 
     def _raise_if_error(self, obj: Any, *, context: str) -> None:
@@ -369,6 +389,26 @@ class UnderstandingAPI(BaseParser):
         err = obj.get("error")
         if isinstance(err, dict) and err.get("code"):
             raise RuntimeError(f"{context}: {self._safe_error_summary(obj)}")
+
+    def _read_api_response(self, rsp: httpx.Response, *, context: str) -> Dict[str, Any]:
+        """Preserve business error details and the HTTP exception's status metadata."""
+        try:
+            rsp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            try:
+                summary = self._safe_error_summary(rsp.json())
+            except ValueError:
+                summary = None
+            if summary is not None:
+                raise httpx.HTTPStatusError(
+                    f"{context}: HTTP {rsp.status_code}: {summary}",
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
+            raise
+        body = rsp.json()
+        self._raise_if_error(body, context=context)
+        return body
 
     async def _create_file(self, *, local_path: Path) -> Dict[str, Any]:
         file_size = local_path.stat().st_size
@@ -395,10 +435,7 @@ class UnderstandingAPI(BaseParser):
                     data=data,
                     files=files,
                 )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="files api error")
-        return body
+        return self._read_api_response(rsp, context="files api error")
 
     async def _create_response_for_file(self, *, file_id: str) -> Dict[str, Any]:
         content: Dict[str, Any] = {"type": "file", "file": {"file_id": file_id}}
@@ -415,10 +452,7 @@ class UnderstandingAPI(BaseParser):
                 content=self._json_bytes(payload),
                 headers=self._auth_headers({"Content-Type": "application/json;charset=UTF-8"}),
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="responses api error")
-        return body
+        return self._read_api_response(rsp, context="responses api error")
 
     async def _create_response_for_url(
         self,
@@ -450,10 +484,7 @@ class UnderstandingAPI(BaseParser):
                 content=self._json_bytes(payload),
                 headers=self._auth_headers({"Content-Type": "application/json;charset=UTF-8"}),
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="responses api error")
-        return body
+        return self._read_api_response(rsp, context="responses api error")
 
     @staticmethod
     def _is_feishu_url(source: str) -> bool:
@@ -527,10 +558,8 @@ class UnderstandingAPI(BaseParser):
                     f"{self._api_base}/responses/{response_id}",
                     headers=self._auth_headers(),
                 )
-                rsp.raise_for_status()
-                body = rsp.json()
-                self._raise_if_error(
-                    body, context=f"responses api error: response_id={response_id}"
+                body = self._read_api_response(
+                    rsp, context=f"responses api error: response_id={response_id}"
                 )
                 status = body.get("status")
                 if status != last_status:
@@ -578,10 +607,7 @@ class UnderstandingAPI(BaseParser):
                 content=self._json_bytes(payload),
                 headers=self._auth_headers({"Content-Type": "application/json;charset=UTF-8"}),
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="uploads init error")
-        return body
+        return self._read_api_response(rsp, context="uploads init error")
 
     async def _uploads_status(self, *, upload_id: str, object_key: str) -> Dict[str, Any]:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
@@ -589,10 +615,7 @@ class UnderstandingAPI(BaseParser):
                 f"{self._api_base}/files?upload_id={upload_id}&object_key={object_key}",
                 headers=self._auth_headers(),
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="uploads status error")
-        return body
+        return self._read_api_response(rsp, context="uploads status error")
 
     async def _uploads_put_part(
         self, *, upload_id: str, object_key: str, part_number: int, data: bytes
@@ -604,10 +627,7 @@ class UnderstandingAPI(BaseParser):
                 headers=headers,
                 content=data,
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="uploads part error")
-        return body
+        return self._read_api_response(rsp, context="uploads part error")
 
     async def _uploads_complete(
         self, *, upload_id: str, object_key: str, parts: List[Dict[str, Any]]
@@ -619,10 +639,7 @@ class UnderstandingAPI(BaseParser):
                 content=self._json_bytes(payload),
                 headers=self._auth_headers({"Content-Type": "application/json;charset=UTF-8"}),
             )
-        rsp.raise_for_status()
-        body = rsp.json()
-        self._raise_if_error(body, context="uploads complete error")
-        return body
+        return self._read_api_response(rsp, context="uploads complete error")
 
     async def _multipart_create_file(self, file_path: Path) -> Dict[str, Any]:
         init_obj = await self._uploads_init(file_path=file_path)
