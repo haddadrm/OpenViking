@@ -9,9 +9,19 @@ from openviking_cli.exceptions import InvalidArgumentError
 
 
 @pytest.mark.asyncio
-async def test_parse_uses_downloaded_file_and_resolved_extension(monkeypatch, tmp_path):
-    downloaded = tmp_path / "download"
-    downloaded.write_bytes(b"%PDF-1.7")
+@pytest.mark.parametrize(
+    "filename,content,original_source,resolved_extension,source_format",
+    [
+        ("download", b"%PDF-1.7", "https://example.com/download?id=123", ".pdf", "pdf"),
+        ("page.html", b"<h1>Page</h1>", "https://example.com/page.html?view=full", "", "html"),
+        ("page.html", b"<h1>Page</h1>", "https://example.com/article?id=123", ".html", "html"),
+    ],
+)
+async def test_parse_uses_downloaded_file_and_resolved_extension(
+    monkeypatch, tmp_path, filename, content, original_source, resolved_extension, source_format
+):
+    downloaded = tmp_path / filename
+    downloaded.write_bytes(content)
     zip_path = tmp_path / "result.zip"
     zip_path.write_bytes(b"zip")
     uploaded: list[Path] = []
@@ -46,14 +56,14 @@ async def test_parse_uses_downloaded_file_and_resolved_extension(monkeypatch, tm
 
     result = await api.parse(
         downloaded,
-        original_source="https://example.com/download?id=123",
+        original_source=original_source,
         resource_name="report",
-        resolved_extension=".pdf",
+        resolved_extension=resolved_extension,
     )
 
     assert uploaded == [downloaded]
-    assert result.source_path == "https://example.com/download?id=123"
-    assert result.source_format == "pdf"
+    assert result.source_path == original_source
+    assert result.source_format == source_format
     assert result.root.title == "report"
 
 

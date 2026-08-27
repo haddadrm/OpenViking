@@ -4,15 +4,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from openviking.parse.accessors.base import LocalResource, SourceType
+from openviking.parse.accessors.web_crawler.models import CrawledPage, CrawlResult
 from openviking.parse.base import NodeType, ResourceNode, create_parse_result
 from openviking.parse.parser_router import ParserRouter
 from openviking.parse.parsers.base_parser import BaseParser
 from openviking.parse.parsers.directory import DirectoryParser
+from openviking.parse.parsers.html import HTMLParser
 from openviking.parse.parsers.pdf import PDFParser
-from openviking.parse.understanding_api import UnderstandingAPIError
+from openviking.parse.understanding_api import UnderstandingAPI, UnderstandingAPIError
 from openviking.utils.media_processor import UnifiedResourceProcessor
 from openviking.utils.resource_processor import ResourceProcessor
 from openviking_cli.exceptions import InvalidArgumentError
@@ -54,11 +57,14 @@ def _configure_understanding(
     config = SimpleNamespace(
         parser_api=SimpleNamespace(
             enable=enabled,
+            host="https://parser.example.com",
+            api_key="test-key",
             enable_feishu_url=False,
             extensions=extensions,
             response_timeout_seconds=1800,
             http_timeout_seconds=10.0,
             upload_simple_max_bytes=upload_simple_max_bytes,
+            upload_part_size_bytes=8 * 1024 * 1024,
             enable_resumable_upload=enable_resumable_upload,
         ),
         directory=SimpleNamespace(
@@ -113,7 +119,7 @@ async def test_materialized_html_webpage_routes_to_understanding(monkeypatch, tm
 
     with (
         patch.object(BaseParser, "_get_viking_fs", return_value=fake_fs),
-        patch.object(ParserRouter, "parse", new=_fake_understanding_parse(calls)),
+        patch.object(UnderstandingAPI, "parse", new=_fake_understanding_parse(calls)),
         patch.object(DirectoryParser, "_merge_temp", new=AsyncMock(return_value=True)),
     ):
         result = await UnifiedResourceProcessor(vlm_processor=object()).process(
@@ -128,6 +134,104 @@ async def test_materialized_html_webpage_routes_to_understanding(monkeypatch, tm
     }
     assert result.meta["file_count"] == 2
     assert {item["parser"] for item in result.meta["processed_files"]} == {"UnderstandingAPI"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url,depth,enabled,extensions,expected_parser",
+    [
+        pytest.param(
+            "https://example.com/article", 0, True, ["html"], "UnderstandingAPI", id="extensionless"
+        ),
+        pytest.param(
+            "https://example.com/page.html", 0, True, ["html"], "UnderstandingAPI", id="html"
+        ),
+        pytest.param(
+            "https://example.com/page.htm?view=full#top",
+            0,
+            True,
+            ["html"],
+            "UnderstandingAPI",
+            id="htm-query",
+        ),
+        pytest.param(
+            "https://example.com/", 1, True, ["html"], "UnderstandingAPI", id="multiple-pages"
+        ),
+        pytest.param(
+            "https://example.com/page.html", 0, False, ["html"], "HTMLParser", id="disabled"
+        ),
+        pytest.param(
+            "https://example.com/article",
+            0,
+            True,
+            ["pdf"],
+            "HTMLParser",
+            id="extension-not-enabled",
+        ),
+    ],
+)
+async def test_html_url_routes_materialized_pages(
+    monkeypatch, tmp_path: Path, url, depth, enabled, extensions, expected_parser
+):
+    _configure_understanding(monkeypatch, extensions, enabled=enabled)
+    pages = [CrawledPage(url=url, html="<html><h1>Home</h1><p>Home content</p></html>")]
+    if depth:
+        pages.append(
+            CrawledPage(
+                url="https://example.com/articles/detail",
+                depth=1,
+                html="<html><h1>Detail</h1><p>Detail content</p></html>",
+            )
+        )
+    crawler = MagicMock()
+    crawler.return_value.crawl = AsyncMock(
+        return_value=CrawlResult(pages=pages, total_crawled=len(pages))
+    )
+    monkeypatch.setattr("openviking.parse.accessors.web_importer.ScrapyWebCrawler", crawler)
+    monkeypatch.setattr(
+        "openviking.parse.accessors.web_importer.tempfile.mkdtemp",
+        lambda **_kwargs: str(tmp_path / "web"),
+    )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, headers={"content-type": "text/html; charset=utf-8"}, text=pages[0].html
+        )
+    )
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: client_type(transport=transport, **kwargs)
+    )
+    parsed_files = {}
+
+    async def parse_html(parser, source, **_kwargs):
+        path = Path(source)
+        parsed_files[path.name] = (type(parser).__name__, path.read_text(encoding="utf-8"))
+        result = create_parse_result(
+            root=ResourceNode(type=NodeType.ROOT, title=path.stem),
+            parser_name=type(parser).__name__,
+        )
+        result.temp_dir_path = f"viking://temp/{path.stem}"
+        return result
+
+    with (
+        patch.object(BaseParser, "_get_viking_fs", return_value=_FakeVikingFS()),
+        patch.object(UnderstandingAPI, "parse", new=parse_html),
+        patch.object(HTMLParser, "parse", new=parse_html),
+        patch.object(DirectoryParser, "_merge_temp", new=AsyncMock(return_value=True)),
+    ):
+        result = await UnifiedResourceProcessor(vlm_processor=object()).process(
+            url, depth=depth, strict=True
+        )
+
+    expected = {"Home.html": (expected_parser, pages[0].html)}
+    if depth:
+        expected["Detail.html"] = (expected_parser, pages[1].html)
+    assert parsed_files == expected
+    assert result.meta["failed_files"] == []
+    assert result.meta["file_count"] == len(pages)
+    assert {item["parser"] for item in result.meta["processed_files"]} == {expected_parser}
+    crawler.return_value.crawl.assert_awaited_once_with(url)
+    assert crawler.call_args.args[0].depth == depth
 
 
 @pytest.mark.asyncio
@@ -554,12 +658,15 @@ async def test_understanding_results_merge_in_source_order(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("extension,content", [("pdf", b"%PDF-1.7"), ("html", b"<h1>Page</h1>")])
 async def test_no_split_directory_rejects_understanding_before_submit(
     monkeypatch,
     tmp_path: Path,
+    extension,
+    content,
 ):
-    _configure_understanding(monkeypatch, ["pdf"])
-    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.7")
+    _configure_understanding(monkeypatch, [extension])
+    (tmp_path / f"paper.{extension}").write_bytes(content)
     parse = AsyncMock(side_effect=AssertionError("Understanding must not be submitted"))
 
     with patch.object(ParserRouter, "parse", new=parse):
@@ -605,9 +712,12 @@ async def test_understanding_directory_job_timeout_is_recorded(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_understanding_directory_failure_preserves_remote_ids(monkeypatch, tmp_path: Path):
-    _configure_understanding(monkeypatch, ["pdf"])
-    (tmp_path / "failed.pdf").write_bytes(b"%PDF-1.7")
+@pytest.mark.parametrize("extension,content", [("pdf", b"%PDF-1.7"), ("html", b"<h1>Page</h1>")])
+async def test_understanding_directory_failure_preserves_remote_ids(
+    monkeypatch, tmp_path: Path, extension, content
+):
+    _configure_understanding(monkeypatch, [extension])
+    (tmp_path / f"failed.{extension}").write_bytes(content)
 
     async def parse(_self, _source, **_kwargs):
         raise UnderstandingAPIError(
@@ -623,7 +733,7 @@ async def test_understanding_directory_failure_preserves_remote_ids(monkeypatch,
 
     assert result.meta["failed_files"] == [
         {
-            "path": "failed.pdf",
+            "path": f"failed.{extension}",
             "parser": "UnderstandingAPI",
             "file_id": "file-1",
             "response_id": "response-1",
