@@ -319,7 +319,11 @@ class ResourceProcessor:
                 raise
             except Exception as e:
                 result["status"] = "error"
-                result["errors"].append(f"Parse error: {e}")
+                error_message = f"Parse error: {e}"
+                error_meta = getattr(e, "meta", {})
+                if isinstance(error_meta, dict) and error_meta.get("response_id"):
+                    error_message += f" (response_id={error_meta['response_id']})"
+                result["errors"].append(error_message)
                 logger.error(f"[ResourceProcessor] Parse error: {e}")
                 telemetry.set_error("resource_processor.parse", "PROCESSING_ERROR", str(e))
                 import traceback

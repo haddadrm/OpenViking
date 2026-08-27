@@ -627,9 +627,7 @@ async def test_understanding_directory_failure_preserves_remote_ids(monkeypatch,
             "parser": "UnderstandingAPI",
             "file_id": "file-1",
             "response_id": "response-1",
-            "error": (
-                'remote parse failed meta={"file_id": "file-1", "response_id": "response-1"}'
-            ),
+            "error": "remote parse failed",
         }
     ]
 

@@ -52,21 +52,6 @@ class UnderstandingAPIError(RuntimeError):
         self.meta = dict(meta or {})
         super().__init__(message)
 
-    def __str__(self) -> str:
-        message = super().__str__()
-        fields = (
-            "doc_name",
-            "doc_type",
-            "source_name",
-            "file_name",
-            "file_id",
-            "response_id",
-        )
-        compact = {key: self.meta[key] for key in fields if self.meta.get(key)}
-        if not compact:
-            return message
-        return f"{message} meta={json.dumps(compact, ensure_ascii=False, sort_keys=True)}"
-
 
 class UnderstandingAPI(BaseParser):
     """
@@ -232,6 +217,7 @@ class UnderstandingAPI(BaseParser):
         except UnderstandingAPIError:
             raise
         except Exception as exc:
+            logger.warning("[UnderstandingAPI] Parse failed: %s; meta=%s", exc, task_meta)
             raise UnderstandingAPIError(str(exc), task_meta) from exc
 
         content_type = (
@@ -383,12 +369,23 @@ class UnderstandingAPI(BaseParser):
                 summary["output_text"] = texts
         return summary
 
+    def _error_message(self, obj: Any) -> str:
+        """Extract the failure reason without adding remote identifiers."""
+        summary = self._safe_error_summary(obj)
+        error = summary.get("error") or {}
+        for message in (error.get("message"), summary.get("message")):
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        if summary.get("output_text"):
+            return "; ".join(summary["output_text"])
+        return str(error.get("code") or "request failed")
+
     def _raise_if_error(self, obj: Any, *, context: str) -> None:
         if not isinstance(obj, dict):
             return
         err = obj.get("error")
         if isinstance(err, dict) and err.get("code"):
-            raise RuntimeError(f"{context}: {self._safe_error_summary(obj)}")
+            raise RuntimeError(f"{context}: {self._error_message(obj)}")
 
     def _read_api_response(self, rsp: httpx.Response, *, context: str) -> Dict[str, Any]:
         """Preserve business error details and the HTTP exception's status metadata."""
@@ -558,9 +555,7 @@ class UnderstandingAPI(BaseParser):
                     f"{self._api_base}/responses/{response_id}",
                     headers=self._auth_headers(),
                 )
-                body = self._read_api_response(
-                    rsp, context=f"responses api error: response_id={response_id}"
-                )
+                body = self._read_api_response(rsp, context="responses api error")
                 status = body.get("status")
                 if status != last_status:
                     logger.info(f"[UnderstandingAPI] response_id={response_id} status={status}")
@@ -568,13 +563,9 @@ class UnderstandingAPI(BaseParser):
                 if status == "completed":
                     return body
                 if status == "failed":
-                    raise RuntimeError(
-                        f"understanding failed: response_id={response_id} body={self._safe_error_summary(body)}"
-                    )
+                    raise RuntimeError(f"understanding failed: {self._error_message(body)}")
                 if asyncio.get_running_loop().time() > deadline:
-                    raise TimeoutError(
-                        f"understanding timeout: response_id={response_id} last_status={last_status}"
-                    )
+                    raise TimeoutError(f"understanding timeout: last_status={last_status}")
                 await asyncio.sleep(max(self._default_poll_interval_ms, 200) / 1000.0)
 
     def _extract_zip_url(self, response_obj: Dict[str, Any]) -> Optional[str]:

@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -118,6 +118,8 @@ async def test_parse_failure_preserves_observed_remote_ids(monkeypatch, tmp_path
     api._video_exts = {"mp4"}
     api._audio_exts = {"mp3"}
     api._image_exts = {"png"}
+    warning = Mock()
+    monkeypatch.setattr("openviking.parse.understanding_api.logger.warning", warning)
 
     monkeypatch.setattr(api, "_create_file", AsyncMock(return_value={"id": "file-1"}))
     monkeypatch.setattr(
@@ -142,7 +144,13 @@ async def test_parse_failure_preserves_observed_remote_ids(monkeypatch, tmp_path
         "file_id": "file-1",
         "response_id": "response-1",
     }
-    assert "response-1" in str(exc_info.value)
+    assert str(exc_info.value) == "remote parse failed"
+    assert isinstance(exc_info.value, RuntimeError)
+    warning.assert_called_once_with(
+        "[UnderstandingAPI] Parse failed: %s; meta=%s",
+        exc_info.value.__cause__,
+        exc_info.value.meta,
+    )
 
 
 async def _return(value):
@@ -305,7 +313,14 @@ async def test_parse_http_failure_preserves_message_and_remote_ids(monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message", ["文件解析任务失败。", "文件解析任务失败：未生成可解析内容"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "文件解析任务失败。",
+        "文件解析任务失败：未生成可解析内容",
+        "文件解析任务失败：empty parse result",
+    ],
+)
 async def test_parse_failed_response_preserves_output_text(monkeypatch, tmp_path, message):
     body = {
         "id": "response-1",
@@ -336,7 +351,7 @@ async def test_parse_failed_response_preserves_output_text(monkeypatch, tmp_path
         await api.parse(source)
 
     assert len(requests) == 1
-    assert "understanding failed" in str(exc_info.value)
+    assert str(exc_info.value) == f"understanding failed: {message}"
     assert exc_info.value.meta["file_id"] == "file-1"
     assert exc_info.value.meta["response_id"] == "response-1"
     assert api._safe_error_summary(body) == {
@@ -345,6 +360,45 @@ async def test_parse_failed_response_preserves_output_text(monkeypatch, tmp_path
         "output_text": [message],
     }
     api._download_zip.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("error", "message", "expected"),
+    [
+        ({"message": "upstream reason"}, "top-level reason", "upstream reason"),
+        ({"message": " "}, "top-level reason", "top-level reason"),
+        ({}, None, "first reason; second reason"),
+    ],
+)
+def test_error_message_prefers_business_reason(error, message, expected):
+    api = UnderstandingAPI.__new__(UnderstandingAPI)
+    body = {
+        "id": "response-1",
+        "status": "failed",
+        "error": error,
+        "message": message,
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": "first reason"},
+                    {"type": "output_text", "text": "second reason"},
+                ]
+            }
+        ],
+    }
+    assert api._error_message(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (None, "request failed"),
+        ({"id": "response-1", "status": "failed"}, "request failed"),
+        ({"error": {"code": "InvalidParameter"}}, "InvalidParameter"),
+    ],
+)
+def test_error_message_fallback_does_not_include_remote_ids(body, expected):
+    assert UnderstandingAPI.__new__(UnderstandingAPI)._error_message(body) == expected
 
 
 def test_failed_response_summary_keeps_only_output_text():
