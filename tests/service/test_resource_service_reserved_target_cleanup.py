@@ -160,3 +160,58 @@ async def test_source_job_error_cleans_new_empty_reservation():
         ctx=ctx,
         resource_lock=lock,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_on_failure", [False, True])
+@pytest.mark.parametrize("raises_error", [False, True])
+async def test_prepared_file_failure_preserves_cleanup_policy(cleanup_on_failure, raises_error):
+    service = _service(SimpleNamespace())
+    error_message = "remote parser rejected file"
+    error_result = {"status": "error", "errors": [error_message]}
+    service._execute_resource_ingestion = AsyncMock(
+        side_effect=RuntimeError(error_message) if raises_error else None,
+        return_value=error_result,
+    )
+    service._cleanup_reserved_target_if_empty = AsyncMock(return_value=True)
+    lock = {"lease_ref": "lock-1"}
+    ctx = _ctx()
+    msg = AddResourceMsg.from_dict(
+        AddResourceMsg(
+            task_id="task-1",
+            path="report.pdf",
+            root_uri="viking://resources/report",
+            account_id="account-1",
+            user_id="user-1",
+            role="user",
+            understanding_file_id="file-1",
+            cleanup_empty_target_on_failure=cleanup_on_failure,
+            internal_task=True,
+        ).to_dict()
+    )
+
+    job = service.execute_add_resource_job(
+        msg,
+        ctx=ctx,
+        resource_lock=lock,
+        stage_callback=AsyncMock(),
+    )
+    if raises_error:
+        with pytest.raises(RuntimeError, match=error_message):
+            await job
+    else:
+        assert await job == error_result
+
+    service._execute_resource_ingestion.assert_awaited_once()
+    kwargs = service._execute_resource_ingestion.await_args.kwargs
+    assert kwargs["understanding_file_id"] == "file-1"
+    assert kwargs["parser_backend"] == "understanding"
+    assert kwargs["internal_task"] is True
+    if cleanup_on_failure:
+        service._cleanup_reserved_target_if_empty.assert_awaited_once_with(
+            root_uri=msg.root_uri,
+            ctx=ctx,
+            resource_lock=lock,
+        )
+    else:
+        service._cleanup_reserved_target_if_empty.assert_not_awaited()

@@ -47,7 +47,10 @@ async def ingest_temp_upload(
         try:
             ingest_args = dict(args or {})
             if parse_mode != ParseMode.DEFAULT and parse_mode != ParseMode.DEFAULT.value:
-                ingest_args.setdefault("parse_mode", str(parse_mode.value if isinstance(parse_mode, ParseMode) else parse_mode))
+                ingest_args.setdefault(
+                    "parse_mode",
+                    str(parse_mode.value if isinstance(parse_mode, ParseMode) else parse_mode),
+                )
             result = await get_service().resources.add_resource(
                 path=resolved.local_path,
                 ctx=ctx,

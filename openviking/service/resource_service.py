@@ -654,7 +654,8 @@ class ResourceService:
             legacy_backend = normalize_parser_backend(queued_args.pop("parser_backend", None))
             parser_backend = legacy_backend or (
                 ParserBackend.UNDERSTANDING
-                if msg.understanding_response_id is not None or msg.understanding_file_id is not None
+                if msg.understanding_response_id is not None
+                or msg.understanding_file_id is not None
                 else ParserBackend.INTERNAL
             )
             internal_kwargs: Dict[str, Any] = {"parser_backend": parser_backend}

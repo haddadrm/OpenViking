@@ -177,9 +177,9 @@ class UnderstandingAPI(BaseParser):
             if prepared_response_id:
                 response_id = prepared_response_id
             elif prepared_file_id:
-            task_meta["file_id"] = prepared_file_id
-            response_obj = await self._create_response_for_file(file_id=prepared_file_id)
-        elif url is None and local_path is not None:
+                task_meta["file_id"] = prepared_file_id
+                response_obj = await self._create_response_for_file(file_id=prepared_file_id)
+            elif url is None and local_path is not None:
                 file_obj = await self._create_file(local_path=local_path)
                 file_id_value = file_obj.get("id")
                 if not file_id_value:

@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from openviking.parse.understanding_api import PREPARED_FILE_ID_ARG, UnderstandingAPI, UnderstandingAPIError
+from openviking.parse.understanding_api import (
+    PREPARED_FILE_ID_ARG,
+    UnderstandingAPI,
+    UnderstandingAPIError,
+)
 from openviking_cli.exceptions import InvalidArgumentError
 
 
@@ -221,6 +225,60 @@ def _api_with_transport(monkeypatch, handler):
         lambda **kwargs: client_class(transport=httpx.MockTransport(handler), **kwargs),
     )
     return api
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["create_response", "poll_response"])
+async def test_prepared_file_failure_preserves_reason_and_remote_ids(
+    monkeypatch, tmp_path, failure_stage
+):
+    message = "文件解析任务失败：未生成可解析内容"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.method == "POST":
+            assert request.url.path == "/api/v3/responses"
+            if failure_stage == "create_response":
+                return httpx.Response(
+                    400, json={"error": {"code": "InvalidParameter", "message": message}}
+                )
+            return httpx.Response(200, json={"id": "response-1"})
+        assert request.url.path == "/api/v3/responses/response-1"
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "status": "failed",
+                "output": [{"content": [{"type": "output_text", "text": message}]}],
+            },
+        )
+
+    api = _api_with_transport(monkeypatch, handler)
+    api._create_file = AsyncMock(side_effect=AssertionError("prepared file must not reupload"))
+    source = tmp_path / "upload_already_cleaned.pdf"
+
+    with pytest.raises(UnderstandingAPIError, match=message) as exc_info:
+        await api.parse(
+            source,
+            source_name="report.pdf",
+            resolved_extension=".pdf",
+            **{PREPARED_FILE_ID_ARG: "file-1"},
+        )
+
+    error = exc_info.value
+    assert error.meta["file_id"] == "file-1"
+    assert error.meta["source_name"] == "report.pdf"
+    if failure_stage == "create_response":
+        assert "response_id" not in error.meta
+        assert isinstance(error.__cause__, httpx.HTTPStatusError)
+        assert error.__cause__.response.status_code == 400
+        assert len(requests) == 1
+    else:
+        assert error.meta["response_id"] == "response-1"
+        assert str(error) == f"understanding failed: {message}"
+        assert len(requests) == 2
+    api._create_file.assert_not_awaited()
 
 
 @pytest.mark.asyncio
