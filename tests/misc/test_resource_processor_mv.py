@@ -351,13 +351,9 @@ async def test_resource_processor_allows_flat_root_only_for_single_no_split_sour
 
     assert result["status"] == "success"
     assert result["root_uri"] == root_uri
-    assert fake_fs._async_agfs.exact_attempts == [
-        ("/mock/resources/神雕_副本.md", 0.0)
-    ]
+    assert fake_fs._async_agfs.exact_attempts == [("/mock/resources/神雕_副本.md", 0.0)]
     assert fake_fs._async_agfs.tree_attempts == []
-    assert rp.tree_builder.finalize_from_temp.await_args.kwargs[
-        "flatten_single_file"
-    ] is True
+    assert rp.tree_builder.finalize_from_temp.await_args.kwargs["flatten_single_file"] is True
 
 
 @pytest.mark.asyncio
@@ -391,9 +387,7 @@ async def test_resource_processor_keeps_wrapper_for_directory_to_no_split(monkey
             _root_is_file=False,
         )
     )
-    rp._summarizer = SimpleNamespace(
-        summarize=AsyncMock(return_value={"status": "success"})
-    )
+    rp._summarizer = SimpleNamespace(summarize=AsyncMock(return_value={"status": "success"}))
 
     result = await rp.process_resource(
         path="神雕.md",
@@ -405,9 +399,7 @@ async def test_resource_processor_keeps_wrapper_for_directory_to_no_split(monkey
     )
 
     assert result["root_uri"] == "viking://resources/0803_shendiao_01"
-    assert rp.tree_builder.finalize_from_temp.await_args.kwargs[
-        "flatten_single_file"
-    ] is False
+    assert rp.tree_builder.finalize_from_temp.await_args.kwargs["flatten_single_file"] is False
 
 
 @pytest.mark.asyncio

@@ -373,9 +373,7 @@ class ResourceService:
                 try:
                     await self._handle_watch_task_cancellation(to_uri=to, ctx=ctx)
                 except Exception as e:
-                    logger.warning(
-                        f"[ResourceService] Failed to cancel watch task for {to}: {e}"
-                    )
+                    logger.warning(f"[ResourceService] Failed to cancel watch task for {to}: {e}")
 
     def _normalize_add_resource_args(
         self,
@@ -391,9 +389,7 @@ class ResourceService:
         if not args:
             return _NormalizedAddResourceArgs({})
 
-        reserved_fields = _ADD_RESOURCE_ARGS_RESERVED_FIELDS - (
-            allowed_reserved_fields or set()
-        )
+        reserved_fields = _ADD_RESOURCE_ARGS_RESERVED_FIELDS - (allowed_reserved_fields or set())
         reserved = sorted(set(args).intersection(reserved_fields))
         if reserved:
             raise InvalidArgumentError(
@@ -727,7 +723,8 @@ class ResourceService:
                     stage_callback=stage_callback,
                     watch_auth_state=watch_auth_state,
                     prepared_resource=prepared_resource,
-                    internal_task=msg.internal_task,**internal_kwargs,
+                    internal_task=msg.internal_task,
+                    **internal_kwargs,
                 )
             except BaseException:
                 if msg.cleanup_empty_target_on_failure and resource_lock is not None:
@@ -907,7 +904,9 @@ class ResourceService:
                 path,
                 ctx,
                 snapshot_required=local_source
-                or bool(processor_kwargs.get("tos_signature") or processor_kwargs.get("tos_access")),
+                or bool(
+                    processor_kwargs.get("tos_signature") or processor_kwargs.get("tos_access")
+                ),
                 parse_mode=mode,
                 allow_local_path_resolution=allow_local_path_resolution,
                 **processor_kwargs,
@@ -1021,16 +1020,10 @@ class ResourceService:
     ) -> Dict[str, Any]:
         from openviking.storage.queuefs.add_resource_msg import AddResourceMsg
 
-        planned_to_is_directory = (
-            to_is_directory if to_is_directory is not None else bool(to)
-        )
+        planned_to_is_directory = to_is_directory if to_is_directory is not None else bool(to)
         target_to_is_exact = bool(to and not is_content_root_uri(to, kind="resource"))
         defer_candidate_resolution = bool(
-            (
-                plan.defer_unnamed_target
-                and plan.source_identity.source_name is None
-                and not to
-            )
+            (plan.defer_unnamed_target and plan.source_identity.source_name is None and not to)
             or (mode is ParseMode.NO_SPLIT and not target_to_is_exact)
         )
         root_uri = ""
@@ -1232,15 +1225,15 @@ class ResourceService:
                     else:
                         proc.kill()
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(
-                        asyncio.shield(proc.communicate()), timeout=1.0
-                    )
+                    await asyncio.wait_for(asyncio.shield(proc.communicate()), timeout=1.0)
             if isinstance(exc, asyncio.TimeoutError):
                 raise InvalidArgumentError(
                     "Cannot access Git repository; the preflight timed out after 10s."
                 ) from exc
             if isinstance(exc, Exception):
-                raise InvalidArgumentError("Cannot access Git repository during preflight.") from exc
+                raise InvalidArgumentError(
+                    "Cannot access Git repository during preflight."
+                ) from exc
             raise
 
         if proc.returncode != 0:

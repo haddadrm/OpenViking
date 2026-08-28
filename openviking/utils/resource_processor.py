@@ -150,9 +150,8 @@ class ResourceProcessor:
     ) -> Optional["LocalResource"]:
         """Freeze a source when durable routing cannot safely defer access."""
         media_processor = self._get_media_processor()
-        if (
-            not snapshot_required
-            and not media_processor.durable_route_requires_preparation(path, **kwargs)
+        if not snapshot_required and not media_processor.durable_route_requires_preparation(
+            path, **kwargs
         ):
             return None
         with get_viking_fs().bind_request_context(ctx):

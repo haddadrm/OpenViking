@@ -267,7 +267,9 @@ async def test_tos_auth_args_require_http_resource_url(
     service: ResourceService,
     ctx: RequestContext,
 ):
-    with pytest.raises(InvalidArgumentError, match=r"tos_signature and tos_access are only supported"):
+    with pytest.raises(
+        InvalidArgumentError, match=r"tos_signature and tos_access are only supported"
+    ):
         await service.add_resource(
             path="/test/path",
             ctx=ctx,
