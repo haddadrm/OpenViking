@@ -1420,8 +1420,21 @@ impl HttpClient {
             .await
     }
 
-    pub async fn admin_list_accounts(&self) -> Result<Value> {
-        self.get("/api/v1/admin/accounts", &[]).await
+    pub async fn admin_list_accounts(
+        &self,
+        name: Option<String>,
+        limit: Option<u32>,
+        page: u32,
+    ) -> Result<Value> {
+        let mut params = vec![];
+        if let Some(n) = name {
+            params.push(("name".to_string(), n));
+        }
+        if let Some(l) = limit {
+            params.push(("limit".to_string(), l.to_string()));
+            params.push(("page".to_string(), page.to_string()));
+        }
+        self.get("/api/v1/admin/accounts", &params).await
     }
 
     pub async fn admin_delete_account(&self, account_id: &str) -> Result<Value> {
@@ -1453,12 +1466,17 @@ impl HttpClient {
     pub async fn admin_list_users(
         &self,
         account_id: &str,
-        limit: u32,
+        limit: Option<u32>,
         name: Option<String>,
         role: Option<String>,
+        page: u32,
     ) -> Result<Value> {
         let path = format!("/api/v1/admin/accounts/{}/users", account_id);
-        let mut params = vec![("limit".to_string(), limit.to_string())];
+        let mut params = vec![];
+        if let Some(l) = limit {
+            params.push(("limit".to_string(), l.to_string()));
+            params.push(("page".to_string(), page.to_string()));
+        }
         if let Some(n) = name {
             params.push(("name".to_string(), n));
         }

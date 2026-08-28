@@ -1832,7 +1832,17 @@ enum AdminCommands {
         user_config_json: Option<String>,
     },
     /// List all accounts (ROOT only)
-    ListAccounts,
+    ListAccounts {
+        /// Filter accounts by ID (supports wildcard * and ?)
+        #[arg(long, value_name = "pattern")]
+        name: Option<String>,
+        /// Page size; omit to list all accounts
+        #[arg(long, value_name = "n")]
+        limit: Option<u32>,
+        /// 1-based page number (requires --limit)
+        #[arg(long, default_value = "1", value_name = "n")]
+        page: u32,
+    },
     /// Delete an account and all associated users (ROOT only)
     DeleteAccount {
         /// Account ID to delete
@@ -1868,15 +1878,18 @@ enum AdminCommands {
         /// Account ID
         #[arg(value_name = "account-id")]
         account_id: String,
-        /// Maximum number of users to list (default: 100)
-        #[arg(long, default_value = "100", value_name = "n")]
-        limit: u32,
+        /// Page size; omit to list all users
+        #[arg(long, value_name = "n")]
+        limit: Option<u32>,
         /// Filter users by name (supports wildcard * and ?)
         #[arg(long, value_name = "pattern")]
         name: Option<String>,
         /// Filter users by role
         #[arg(long, value_name = "role")]
         role: Option<String>,
+        /// 1-based page number (requires --limit)
+        #[arg(long, default_value = "1", value_name = "n")]
+        page: u32,
     },
     /// Remove a user from an account
     RemoveUser {

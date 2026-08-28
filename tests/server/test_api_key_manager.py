@@ -358,7 +358,101 @@ async def test_get_users(manager: APIKeyManager):
     assert {u["user_id"] for u in users} == {"alice"}
 
 
-# ---- Persistence tests ----
+async def test_get_users_name_filter(manager: APIKeyManager):
+    """get_users name_filter uses fnmatch wildcard matching against user IDs."""
+    acct = _uid()
+    await manager.create_account(acct, "alice")
+    await manager.register_user(acct, "alan", "user")
+    await manager.register_user(acct, "bob", "user")
+
+    # Wildcard substring match
+    matched = {u["user_id"] for u in manager.get_users(acct, name_filter="al*")}
+    assert matched == {"alice", "alan"}
+
+    # Exact match (no wildcard) only hits the literal ID
+    assert {u["user_id"] for u in manager.get_users(acct, name_filter="alice")} == {"alice"}
+
+    # No match
+    assert manager.get_users(acct, name_filter="zzz*") == []
+
+    # No filter returns all
+    assert {u["user_id"] for u in manager.get_users(acct)} == {"alice", "alan", "bob"}
+
+
+async def test_get_accounts_filter(manager: APIKeyManager):
+    """get_accounts supports fnmatch name_filter, mirroring get_users."""
+    prefix = f"acme_{uuid.uuid4().hex[:8]}"
+    first = f"{prefix}_alpha"
+    second = f"{prefix}_beta"
+    other = f"other_{uuid.uuid4().hex[:8]}"
+    await manager.create_account(first, "u1")
+    await manager.create_account(second, "u2")
+    await manager.create_account(other, "u3")
+
+    # Wildcard match returns only the two prefixed accounts
+    matched = {a["account_id"] for a in manager.get_accounts(name_filter=f"{prefix}*")}
+    assert matched == {first, second}
+
+    # Exact match (no wildcard) hits a single account
+    assert {a["account_id"] for a in manager.get_accounts(name_filter=first)} == {first}
+
+    # No filter returns all accounts (including the default one)
+    all_ids = {a["account_id"] for a in manager.get_accounts()}
+    assert {first, second, other} <= all_ids
+
+
+async def test_get_users_pagination_and_ordering(manager: APIKeyManager):
+    """get_users returns users in lexicographic order and honors limit/page."""
+    acct = _uid()
+    await manager.create_account(acct, "alice")
+    # Register out of order; expected sorted order is alice, bob, carol, dave.
+    await manager.register_user(acct, "dave", "user")
+    await manager.register_user(acct, "bob", "user")
+    await manager.register_user(acct, "carol", "user")
+
+    # No limit -> all users, lexicographically ordered.
+    ids = [u["user_id"] for u in manager.get_users(acct)]
+    assert ids == ["alice", "bob", "carol", "dave"]
+
+    # First page of 2.
+    page1 = [u["user_id"] for u in manager.get_users(acct, limit=2, page=1)]
+    assert page1 == ["alice", "bob"]
+
+    # Second page of 2.
+    page2 = [u["user_id"] for u in manager.get_users(acct, limit=2, page=2)]
+    assert page2 == ["carol", "dave"]
+
+    # Page past the end is empty.
+    assert manager.get_users(acct, limit=2, page=3) == []
+
+    # Pagination applies after the name filter.
+    filtered = [u["user_id"] for u in manager.get_users(acct, name_filter="*a*", limit=1, page=2)]
+    assert filtered == ["carol"]
+
+
+async def test_get_accounts_pagination_and_ordering(manager: APIKeyManager):
+    """get_accounts returns accounts in lexicographic order and honors limit/page."""
+    prefix = f"page_{uuid.uuid4().hex[:8]}"
+    ids = [f"{prefix}_{suffix}" for suffix in ("delta", "alpha", "charlie", "bravo")]
+    for account_id in ids:
+        await manager.create_account(account_id, "u")
+
+    expected = sorted(ids)
+
+    # No limit -> all matches, lexicographically ordered.
+    got = [a["account_id"] for a in manager.get_accounts(name_filter=f"{prefix}*")]
+    assert got == expected
+
+    # First page of 2.
+    page1 = [a["account_id"] for a in manager.get_accounts(name_filter=f"{prefix}*", limit=2, page=1)]
+    assert page1 == expected[:2]
+
+    # Second page of 2.
+    page2 = [a["account_id"] for a in manager.get_accounts(name_filter=f"{prefix}*", limit=2, page=2)]
+    assert page2 == expected[2:]
+
+    # Page past the end is empty.
+    assert manager.get_accounts(name_filter=f"{prefix}*", limit=2, page=3) == []
 
 
 async def test_persistence_across_reload(manager_service):
