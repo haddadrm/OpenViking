@@ -127,6 +127,7 @@ _ADD_RESOURCE_ARGS_RESERVED_FIELDS = frozenset(
         "telemetry",
         "request_validator",
         "understanding_response_id",
+        "understanding_file_id",
         "parser_backend",
         "resolved_extension",
         "defer_post_processing",
@@ -150,6 +151,7 @@ _INTERNAL_INGESTION_FIELDS = frozenset(
         "to_is_directory",
         "watch_auth_state",
         "understanding_response_id",
+        "understanding_file_id",
         "parser_backend",
         "resolved_extension",
         "prepared_resource",
@@ -179,6 +181,7 @@ class _SourcePlan:
     task_auth: Dict[str, Any] = field(repr=False)
     staged_source: Optional["StagedSource"] = None
     understanding_response_id: Optional[str] = None
+    understanding_file_id: Optional[str] = None
     defer_unnamed_target: bool = False
 
 
@@ -235,6 +238,7 @@ class ResourceService:
                 "parser_backend",
                 "resolved_extension",
                 "understanding_response_id",
+                "understanding_file_id",
                 "temp_file_id",
             }:
                 continue
@@ -650,7 +654,7 @@ class ResourceService:
             legacy_backend = normalize_parser_backend(queued_args.pop("parser_backend", None))
             parser_backend = legacy_backend or (
                 ParserBackend.UNDERSTANDING
-                if msg.understanding_response_id is not None
+                if msg.understanding_response_id is not None or msg.understanding_file_id is not None
                 else ParserBackend.INTERNAL
             )
             internal_kwargs: Dict[str, Any] = {"parser_backend": parser_backend}
@@ -698,6 +702,10 @@ class ResourceService:
                 from openviking.parse.understanding_api import PREPARED_RESPONSE_ID_ARG
 
                 internal_kwargs[PREPARED_RESPONSE_ID_ARG] = msg.understanding_response_id
+            if msg.understanding_file_id is not None:
+                from openviking.parse.understanding_api import PREPARED_FILE_ID_ARG
+
+                internal_kwargs[PREPARED_FILE_ID_ARG] = msg.understanding_file_id
             try:
                 result = await self._execute_resource_ingestion(
                     path=msg.path,
@@ -794,7 +802,7 @@ class ResourceService:
                 watch_auth_state = None
             auth_kwargs = (
                 {FEISHU_ACCESS_TOKEN_ARG: token.strip()}
-                if msg.understanding_response_id is None
+                if msg.understanding_response_id is None and msg.understanding_file_id is None
                 else {}
             )
             return auth_kwargs, watch_auth_state
@@ -849,6 +857,7 @@ class ResourceService:
         task_auth: Dict[str, Any] = {}
         staged_source = None
         understanding_response_id = None
+        understanding_file_id = None
         defer_unnamed_target = False
 
         if git_source:
@@ -933,12 +942,17 @@ class ResourceService:
                         mode is ParseMode.DEFAULT
                         and self._resource_processor.should_use_understanding_api(prepared)
                     ):
-                        understanding_response_id = (
-                            await self._resource_processor.submit_understanding(
-                                prepared,
-                                **processor_kwargs,
+                        if processor_kwargs.get("temp_file_id"):
+                            understanding_file_id = (
+                                await self._resource_processor.upload_understanding_file(prepared)
                             )
-                        )
+                        else:
+                            understanding_response_id = (
+                                await self._resource_processor.submit_understanding(
+                                    prepared,
+                                    **processor_kwargs,
+                                )
+                            )
                     else:
                         staged_source = await stage_source(
                             prepared,
@@ -955,6 +969,7 @@ class ResourceService:
             task_auth=task_auth,
             staged_source=staged_source,
             understanding_response_id=understanding_response_id,
+            understanding_file_id=understanding_file_id,
             defer_unnamed_target=defer_unnamed_target,
         )
 
@@ -1046,10 +1061,17 @@ class ResourceService:
                 defer_candidate_resolution=defer_candidate_resolution,
             )
             lock_handoff = await self._lock_to_handoff_payload(resource_lock)
+            message_path = plan.path
+            if processor_kwargs.get("temp_file_id") and plan.understanding_file_id is not None:
+                message_path = (
+                    plan.source_identity.source_name
+                    or plan.source_identity.source_path
+                    or "uploaded-file"
+                )
             msg = AddResourceMsg(
                 task_id=str(uuid4()),
                 job_phase=AddResourcePhase.SOURCE,
-                path=plan.path,
+                path=message_path,
                 source_path=(plan.source_identity.source_name or "")
                 if processor_kwargs.get("temp_file_id")
                 else plan.source_identity.source_path or plan.path,
@@ -1093,6 +1115,7 @@ class ResourceService:
                 defer_target_resolution=defer_target_resolution,
                 cleanup_empty_target_on_failure=cleanup_empty_target_on_failure,
                 understanding_response_id=plan.understanding_response_id,
+                understanding_file_id=plan.understanding_file_id,
                 internal_task=internal_task,
             )
 
@@ -1103,6 +1126,7 @@ class ResourceService:
             queue_name = (
                 QueueManager.EXTERNAL_PARSE
                 if plan.understanding_response_id is not None
+                or plan.understanding_file_id is not None
                 else QueueManager.ADD_RESOURCE
             )
             enqueue_lock = resource_lock
