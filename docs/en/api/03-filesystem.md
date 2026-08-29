@@ -25,6 +25,9 @@ List directory contents.
 | node_limit | int | No | 1000 | Maximum number of results |
 | sort_by | str | No | None | Sort directories and files within their groups by `name` or `mtime` before applying `node_limit`; directories remain first |
 | sort_order | str | No | `asc` | Sort direction: `asc` or `desc` |
+| tags | string[] | No | Unset | Return only entries matching every supplied `k=v` retrieval tag |
+
+`tags` uses AND semantics and is applied before `node_limit`. Non-`simple` entries always include `tags` (`[]` when unset); `simple=true` remains a path-only list.
 
 **Entry Structure**
 
@@ -36,7 +39,8 @@ List directory contents.
     "modTime": "2024-01-01T00:00:00Z",  # ISO timestamp
     "isDir": True,            # True if directory
     "uri": "viking://resources/docs/",  # Viking URI
-    "meta": {}                # Optional metadata
+    "meta": {},               # Optional metadata
+    "tags": ["team=search"] # Explicit retrieval tags; an empty array when unset
 }
 ```
 
@@ -69,6 +73,7 @@ entries = client.ls(
     node_limit=200,
     sort_by="mtime",
     sort_order="desc",
+    tags=["team=search", "env=prod"],
 )
 for entry in entries:
     type_str = "dir" if entry['isDir'] else "file"
@@ -78,14 +83,18 @@ for entry in entries:
 **TypeScript SDK**
 
 ```typescript
-const entries = await client.list("viking://resources/docs/", { simple: true });
+const entries = await client.list("viking://resources/docs/", {
+  tags: ["team=search", "env=prod"],
+});
 console.log(entries);
 ```
 
 **Go SDK**
 
 ```go
-entries, err := client.List(ctx, "viking://resources/", nil)
+entries, err := client.List(ctx, "viking://resources/", &openviking.ListOptions{
+    Tags: []string{"team=search", "env=prod"},
+})
 if err != nil {
     return err
 }
@@ -97,7 +106,7 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}
+GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}&tags={k=v}
 ```
 
 ```bash
@@ -112,12 +121,22 @@ curl -X GET "http://localhost:1933/api/v1/fs/ls?uri=viking://resources/&simple=t
 # Recursive listing
 curl -X GET "http://localhost:1933/api/v1/fs/ls?uri=viking://resources/&recursive=true" \
   -H "X-API-Key: your-key"
+
+# Filter by every tag (repeat the query parameter)
+curl -G "http://localhost:1933/api/v1/fs/ls" \
+  -H "X-API-Key: your-key" \
+  --data-urlencode "uri=viking://resources/" \
+  --data-urlencode "tags=team=search" \
+  --data-urlencode "tags=env=prod"
 ```
 
 **CLI**
 
 ```bash
-openviking ls viking://resources/ [--simple] [--recursive]
+openviking ls viking://resources/ [--simple] [--recursive] [--tags team=search,env=prod]
+
+# Show tags in human-readable output; cannot be combined with --simple
+openviking ls viking://resources/ --tags team=search,env=prod --fields tags
 ```
 
 
@@ -133,7 +152,8 @@ openviking ls viking://resources/ [--simple] [--recursive]
       "mode": 16877,
       "modTime": "2024-01-01T00:00:00Z",
       "isDir": true,
-      "uri": "viking://resources/docs/"
+      "uri": "viking://resources/docs/",
+      "tags": ["team=search"]
     }
   ],
   "time": 0.1
@@ -156,12 +176,15 @@ Get directory tree structure.
 | show_all_hidden | bool | No | False | Include hidden files like `-a` |
 | node_limit | int | No | 1000 | Maximum number of results |
 | level_limit | int | No | 3 | Maximum directory depth to traverse |
+| tags | string[] | No | Unset | Retain only nodes matching every supplied `k=v` retrieval tag |
+
+`tags` uses AND semantics and is applied before `node_limit`. Every returned node includes `tags`, with `[]` when unset.
 
 
 **Python HTTP SDK**
 
 ```python
-entries = client.tree(uri="viking://resources/")
+entries = client.tree(uri="viking://resources/", tags=["team=search", "env=prod"])
 for entry in entries:
     type_str = "dir" if entry['isDir'] else "file"
     print(f"{entry['rel_path']} - {type_str}")
@@ -170,14 +193,19 @@ for entry in entries:
 **TypeScript SDK**
 
 ```typescript
-const tree = await client.tree("viking://resources/docs/", { nodeLimit: 100 });
+const tree = await client.tree("viking://resources/docs/", {
+  nodeLimit: 100,
+  tags: ["team=search", "env=prod"],
+});
 console.log(tree);
 ```
 
 **Go SDK**
 
 ```go
-entries, err := client.Tree(ctx, "viking://resources/", nil)
+entries, err := client.Tree(ctx, "viking://resources/", &openviking.TreeOptions{
+    Tags: []string{"team=search", "env=prod"},
+})
 if err != nil {
     return err
 }
@@ -189,18 +217,25 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/tree?uri={uri}
+GET /api/v1/fs/tree?uri={uri}&tags={k=v}
 ```
 
 ```bash
 curl -X GET "http://localhost:1933/api/v1/fs/tree?uri=viking://resources/" \
   -H "X-API-Key: your-key"
+
+# Return only nodes carrying both tags
+curl -G "http://localhost:1933/api/v1/fs/tree" \
+  -H "X-API-Key: your-key" \
+  --data-urlencode "uri=viking://resources/" \
+  --data-urlencode "tags=team=search" \
+  --data-urlencode "tags=env=prod"
 ```
 
 **CLI**
 
 ```bash
-openviking tree viking://resources/my-project/
+openviking tree viking://resources/my-project/ --tags team=search,env=prod
 ```
 
 
@@ -215,14 +250,16 @@ openviking tree viking://resources/my-project/
       "size": 4096,
       "isDir": true,
       "rel_path": "docs/",
-      "uri": "viking://resources/docs/"
+      "uri": "viking://resources/docs/",
+      "tags": ["team=search"]
     },
     {
       "name": "api.md",
       "size": 1024,
       "isDir": false,
       "rel_path": "docs/api.md",
-      "uri": "viking://resources/docs/api.md"
+      "uri": "viking://resources/docs/api.md",
+      "tags": ["team=search", "env=prod"]
     }
   ],
   "time": 0.1

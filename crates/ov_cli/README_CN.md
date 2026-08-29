@@ -112,6 +112,27 @@ ov find "what is openviking"
 ov grep "openviking" --uri viking://resources
 ```
 
+### 检索标签
+
+标签是调用方提供的 `key=value` 检索 metadata。写入或重建索引时使用统一的逗号分隔格式；`ls`、`tree` 与 `grep` 会按 **AND** 语义过滤，要求条目同时包含全部标签。
+
+```bash
+# 写入时随首次向量 upsert 写入 tags
+ov write viking://resources/docs/api.md --content "# API" \
+  --tags team=search,env=prod --tag-mode replace
+
+# 过滤浏览和精确内容搜索
+ov ls viking://resources --tags team=search,env=prod --fields tags
+ov tree viking://resources --tags team=search,env=prod
+ov grep "TODO" --uri viking://resources --tags team=search,env=prod
+
+# 维护已有向量的 tags
+ov --sudo reindex viking://resources --mode vectors_only \
+  --tags team=search,env=prod --tag-mode append
+```
+
+不传 `--tags` 不会修改已有标签。对于写入和 reindex，`--tag-mode replace` 覆盖标签，`append` 按 key 合并；`ls --fields tags` 只影响人类可读输出，不能与 `--simple` 一起使用。
+
 当前安装版本的准确命令面以 `ov --help` 和 `ov <command> --help` 为准。
 
 ## 命令分组

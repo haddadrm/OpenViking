@@ -16,6 +16,7 @@ from openviking.storage.abstract_overview import (
     render_abstract_overview,
 )
 from openviking.storage.queuefs.semantic_dag import SemanticDagExecutor
+from openviking.utils.ingest_options import IngestOptions
 from openviking_cli.session.user_id import UserIdentifier
 
 
@@ -98,7 +99,9 @@ class _FakeProcessor:
         ctx=None,
         use_summary=False,
         ingest_options=None,
+        creator_acl_grant=None,
     ):
+        del creator_acl_grant
         self.vectorized_files.append(file_path)
 
     async def _vectorize_directory(
@@ -109,7 +112,9 @@ class _FakeProcessor:
         overview,
         ctx=None,
         ingest_options=None,
+        creator_acl_grant=None,
     ):
+        del creator_acl_grant
         return None
 
     async def _sync_topdown_recursive(

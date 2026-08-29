@@ -112,6 +112,27 @@ ov find "what is openviking"
 ov grep "openviking" --uri viking://resources
 ```
 
+### Retrieval tags
+
+Tags are caller-provided `key=value` retrieval metadata. Write and index-maintenance commands use one comma-separated format; `ls`, `tree`, and `grep` filter with **AND** semantics, so an entry must carry every supplied tag.
+
+```bash
+# Write tags in the file's first vector upsert
+ov write viking://resources/docs/api.md --content "# API" \
+  --tags team=search,env=prod --tag-mode replace
+
+# Filter browsing and exact content search
+ov ls viking://resources --tags team=search,env=prod --fields tags
+ov tree viking://resources --tags team=search,env=prod
+ov grep "TODO" --uri viking://resources --tags team=search,env=prod
+
+# Maintain tags for existing vectors
+ov --sudo reindex viking://resources --mode vectors_only \
+  --tags team=search,env=prod --tag-mode append
+```
+
+Omitting `--tags` preserves existing tags. For write and reindex, `--tag-mode replace` overwrites tags and `append` merges by key. `ls --fields tags` affects human-readable output only and cannot be combined with `--simple`.
+
 Run `ov --help` and `ov <command> --help` for the exact command surface of your installed version.
 
 ## Command Groups

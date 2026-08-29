@@ -1392,6 +1392,8 @@ pub async fn handle_write(
     wait: bool,
     timeout: Option<f64>,
     processing_mode: String,
+    tags: Vec<String>,
+    tag_mode: String,
     ctx: CliContext,
 ) -> Result<()> {
     let client = ctx.get_client();
@@ -1413,6 +1415,8 @@ pub async fn handle_write(
         wait,
         timeout,
         &processing_mode,
+        tags,
+        &tag_mode,
         ctx.output_format,
         ctx.compact,
     )
@@ -1640,8 +1644,20 @@ pub async fn handle_ls(
     abs_limit: i32,
     show_all_hidden: bool,
     node_limit: i32,
+    tags: Vec<String>,
+    fields: Vec<String>,
     ctx: CliContext,
 ) -> Result<()> {
+    if simple && !fields.is_empty() {
+        return Err(Error::Client(
+            "--fields cannot be used with --simple".to_string(),
+        ));
+    }
+    if fields.iter().any(|field| field != "tags") {
+        return Err(Error::Client(
+            "--fields currently supports only 'tags'".to_string(),
+        ));
+    }
     let mut params = vec![
         uri.clone(),
         format!("-l {}", abs_limit),
@@ -1656,6 +1672,12 @@ pub async fn handle_ls(
     if show_all_hidden {
         params.push("-a".to_string());
     }
+    if !tags.is_empty() {
+        params.push(format!("--tags {}", tags.join(",")));
+    }
+    if !fields.is_empty() {
+        params.push(format!("-f {}", fields.join(",")));
+    }
     print_command_echo("ov ls", &params.join(" "), ctx.config.echo_command);
 
     let client = ctx.get_client();
@@ -1669,6 +1691,8 @@ pub async fn handle_ls(
         abs_limit,
         show_all_hidden,
         node_limit,
+        &tags,
+        fields.iter().any(|field| field == "tags"),
         ctx.output_format,
         ctx.compact,
     )
@@ -1681,6 +1705,7 @@ pub async fn handle_tree(
     show_all_hidden: bool,
     node_limit: i32,
     level_limit: i32,
+    tags: Vec<String>,
     ctx: CliContext,
 ) -> Result<()> {
     let mut params = vec![
@@ -1691,6 +1716,9 @@ pub async fn handle_tree(
     ];
     if show_all_hidden {
         params.push("-a".to_string());
+    }
+    if !tags.is_empty() {
+        params.push(format!("--tags {}", tags.join(",")));
     }
     print_command_echo("ov tree", &params.join(" "), ctx.config.echo_command);
 
@@ -1704,6 +1732,7 @@ pub async fn handle_tree(
         show_all_hidden,
         node_limit,
         level_limit,
+        &tags,
         ctx.output_format,
         ctx.compact,
     )
@@ -1804,6 +1833,7 @@ pub async fn handle_grep(
     ignore_case: bool,
     node_limit: i32,
     level_limit: i32,
+    tags: Vec<String>,
     ctx: CliContext,
 ) -> Result<()> {
     // Prevent grep from root directory to avoid excessive server load and timeouts
@@ -1824,6 +1854,9 @@ pub async fn handle_grep(
     if ignore_case {
         params.push("-i".to_string());
     }
+    if !tags.is_empty() {
+        params.push(format!("--tags {}", tags.join(",")));
+    }
     params.push(format!("\"{}\"", pattern));
     print_command_echo("ov grep", &params.join(" "), ctx.config.echo_command);
     let client = ctx.get_client();
@@ -1835,6 +1868,7 @@ pub async fn handle_grep(
         ignore_case,
         node_limit,
         level_limit,
+        &tags,
         ctx.output_format,
         ctx.compact,
     )

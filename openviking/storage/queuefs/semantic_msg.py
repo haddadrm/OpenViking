@@ -62,6 +62,7 @@ class SemanticMsg:
     is_code_repo: bool = False
     target_preexisting: Optional[bool] = None
     ingest_options: IngestOptions = field(default_factory=IngestOptions)
+    ingest_options_by_uri: Dict[str, IngestOptions] = field(default_factory=dict)
     coalesce_key: str = ""
     coalesce_version: int = 0
     changes: Optional[Dict[str, List[str]]] = (
@@ -90,6 +91,7 @@ class SemanticMsg:
         is_code_repo: bool = False,
         target_preexisting: Optional[bool] = None,
         ingest_options: IngestOptions | Dict[str, Any] | None = None,
+        ingest_options_by_uri: Optional[Dict[str, IngestOptions | Dict[str, Any]]] = None,
         coalesce_key: str = "",
         coalesce_version: int = 0,
         changes: Optional[Dict[str, List[str]]] = None,
@@ -115,6 +117,10 @@ class SemanticMsg:
         self.is_code_repo = is_code_repo
         self.target_preexisting = target_preexisting
         self.ingest_options = IngestOptions.from_value(ingest_options)
+        self.ingest_options_by_uri = {
+            str(uri): IngestOptions.from_value(value)
+            for uri, value in (ingest_options_by_uri or {}).items()
+        }
         self.coalesce_key = coalesce_key
         self.coalesce_version = coalesce_version
         self.changes = changes
@@ -128,6 +134,9 @@ class SemanticMsg:
         """Convert object to dictionary."""
         data = asdict(self)
         data["ingest_options"] = self.ingest_options.to_dict()
+        data["ingest_options_by_uri"] = {
+            uri: options.to_dict() for uri, options in self.ingest_options_by_uri.items()
+        }
         return data
 
     def to_json(self) -> str:
@@ -173,6 +182,7 @@ class SemanticMsg:
                     "search_tag_mode": data.get("search_tag_mode", "replace"),
                 }
             ),
+            ingest_options_by_uri=data.get("ingest_options_by_uri"),
             coalesce_key=data.get("coalesce_key", ""),
             coalesce_version=data.get("coalesce_version", 0),
             changes=data.get("changes"),

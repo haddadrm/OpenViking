@@ -808,6 +808,11 @@ The `grep()` method performs regex pattern matching search in the file system, u
 | exclude_uri | str | No | None | URI prefix to exclude from search |
 | node_limit | int | No | 256 | Maximum number of results. Omitted requests default to 256; pass a larger integer when you need more results |
 | level_limit | int | No | Python SDK: 5; HTTP API / CLI / Go SDK: 10 | Maximum directory depth to traverse. The Go SDK currently uses the HTTP API default. |
+| tags | string[] | No | Unset | Search only files matching every supplied `k=v` retrieval tag |
+
+`tags` uses AND semantics and filters candidate files before content matching and `node_limit` truncation. For example, `["team=search", "env=prod"]` matches only files carrying both tags.
+
+Every entry in `matches` returns the file's `tags`; files without retrieval tags return an empty array (`[]`).
 
 #### 3. Usage Examples
 
@@ -824,7 +829,8 @@ curl -X POST http://localhost:1933/api/v1/search/grep \
     -d '{
         "uri": "viking://resources",
         "pattern": "authentication",
-        "case_insensitive": true
+        "case_insensitive": true,
+        "tags": ["team=search", "env=prod"]
     }'
 ```
 
@@ -841,6 +847,7 @@ results = client.grep(
     pattern="authentication",
     case_insensitive=True,
     node_limit=1024,
+    tags=["team=search", "env=prod"],
 )
 
 print(f"Found {results['count']} matches")
@@ -852,7 +859,9 @@ for match in results['matches']:
 **TypeScript SDK**
 
 ```typescript
-console.log(await client.grep("viking://resources/docs/", "authentication"));
+console.log(await client.grep("viking://resources/docs/", "authentication", {
+  tags: ["team=search", "env=prod"],
+}));
 ```
 
 **Go SDK**
@@ -862,6 +871,7 @@ nodeLimit := 1024
 result, err := client.Grep(ctx, "viking://resources", "authentication", &openviking.GrepOptions{
     CaseInsensitive: true,
     NodeLimit:       &nodeLimit,
+    Tags:            []string{"team=search", "env=prod"},
 })
 if err != nil {
     return err
@@ -880,6 +890,9 @@ openviking grep "authentication" --uri viking://resources --ignore-case
 
 # Specify depth limit
 openviking grep "TODO" --uri viking://resources --level-limit 3
+
+# Search only files carrying every tag
+openviking grep "TODO" --uri viking://resources --tags team=search,env=prod
 ```
 
 **Response Example**
@@ -892,7 +905,8 @@ openviking grep "TODO" --uri viking://resources --level-limit 3
             {
                 "uri": "viking://resources/docs/auth.md",
                 "line": 15,
-                "content": "User authentication is handled by..."
+                "content": "User authentication is handled by...",
+                "tags": ["team=search", "env=prod"]
             }
         ],
         "count": 1

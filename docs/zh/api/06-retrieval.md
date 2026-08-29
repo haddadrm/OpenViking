@@ -809,6 +809,11 @@ curl -X POST http://localhost:1933/api/v1/search/search \
 | node_limit | int | 否 | 256 | 最大返回节点数。省略时默认使用 256；如需更多结果，请显式传入更大的整数 |
 | exclude_uri | str | 否 | None | 要排除在搜索之外的 URI 前缀 |
 | level_limit | int | 否 | Python SDK: 5；HTTP API / CLI / Go SDK: 10 | 最大目录遍历深度。Go SDK 当前使用 HTTP API 默认值。 |
+| tags | string[] | 否 | 未设置 | 仅搜索同时匹配全部 `k=v` 检索标签的文件 |
+
+`tags` 使用 AND 语义，并在内容匹配与 `node_limit` 截断之前过滤候选文件。例如 `["team=search", "env=prod"]` 只匹配同时具有两个标签的文件。
+
+每条 `matches` 命中都会返回文件的 `tags`；没有检索标签的文件返回空数组 `[]`。
 
 #### 3. 使用示例
 
@@ -825,7 +830,8 @@ curl -X POST http://localhost:1933/api/v1/search/grep \
     -d '{
         "uri": "viking://resources",
         "pattern": "authentication",
-        "case_insensitive": true
+        "case_insensitive": true,
+        "tags": ["team=search", "env=prod"]
     }'
 ```
 
@@ -842,6 +848,7 @@ results = client.grep(
     pattern="authentication",
     case_insensitive=True,
     node_limit=1024,
+    tags=["team=search", "env=prod"],
 )
 
 print(f"Found {results['count']} matches")
@@ -853,7 +860,9 @@ for match in results['matches']:
 **TypeScript SDK**
 
 ```typescript
-console.log(await client.grep("viking://resources/docs/", "authentication"));
+console.log(await client.grep("viking://resources/docs/", "authentication", {
+  tags: ["team=search", "env=prod"],
+}));
 ```
 
 **Go SDK**
@@ -863,6 +872,7 @@ nodeLimit := 1024
 result, err := client.Grep(ctx, "viking://resources", "authentication", &openviking.GrepOptions{
     CaseInsensitive: true,
     NodeLimit:       &nodeLimit,
+    Tags:            []string{"team=search", "env=prod"},
 })
 if err != nil {
     return err
@@ -881,6 +891,9 @@ openviking grep "authentication" --uri viking://resources --ignore-case
 
 # 指定深度限制
 openviking grep "TODO" --uri viking://resources --level-limit 3
+
+# 只搜索同时匹配所有 tags 的文件
+openviking grep "TODO" --uri viking://resources --tags team=search,env=prod
 ```
 
 **响应示例**
@@ -893,7 +906,8 @@ openviking grep "TODO" --uri viking://resources --level-limit 3
             {
                 "uri": "viking://resources/docs/auth.md",
                 "line": 15,
-                "content": "User authentication is handled by..."
+                "content": "User authentication is handled by...",
+                "tags": ["team=search", "env=prod"]
             }
         ],
         "count": 1
