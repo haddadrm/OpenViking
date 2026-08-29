@@ -399,12 +399,14 @@ export function FindPalette({
 
   // Directories preview too: FilePreview renders their L0/L1 pages.
   const showPreview = mode.kind !== 'dirBrowse' && activeEntry !== null
-  // Width tracks the palette mode, not the cursor, so an empty result set does
-  // not shrink the dialog out from under the user.
+  // Width tracks the palette mode, not the cursor: searching and directory
+  // browsing are both wide, so an empty result set or a `/` command never
+  // resizes the dialog out from under the user. Only the empty idle prompt,
+  // which has nothing to show yet, stays narrow.
   const paletteWidth =
-    mode.kind === 'search' || showPreview
-      ? 'w-[min(92vw,67rem)]'
-      : 'w-[min(90vw,45rem)]'
+    mode.kind === 'idle' && !showPreview
+      ? 'w-[min(90vw,45rem)]'
+      : 'w-[min(92vw,67rem)]'
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center px-4 sm:items-start sm:px-6 sm:pt-[12vh]"
