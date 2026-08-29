@@ -624,8 +624,15 @@ pub async fn handle_admin(cmd: AdminCommands, ctx: CliContext) -> Result<()> {
             .await
         }
         AdminCommands::ListAccounts { name, limit, page } => {
-            commands::admin::list_accounts(&client, name, limit, page, ctx.output_format, ctx.compact)
-                .await
+            commands::admin::list_accounts(
+                &client,
+                name,
+                limit,
+                page,
+                ctx.output_format,
+                ctx.compact,
+            )
+            .await
         }
         AdminCommands::DeleteAccount { account_id } => {
             commands::admin::delete_account(&client, &account_id, ctx.output_format, ctx.compact)
@@ -1706,8 +1713,14 @@ pub async fn handle_tree(
     node_limit: i32,
     level_limit: i32,
     tags: Vec<String>,
+    fields: Vec<String>,
     ctx: CliContext,
 ) -> Result<()> {
+    if fields.iter().any(|field| field != "tags") {
+        return Err(Error::Client(
+            "--fields currently supports only 'tags'".to_string(),
+        ));
+    }
     let mut params = vec![
         uri.clone(),
         format!("-l {}", abs_limit),
@@ -1719,6 +1732,9 @@ pub async fn handle_tree(
     }
     if !tags.is_empty() {
         params.push(format!("--tags {}", tags.join(",")));
+    }
+    if !fields.is_empty() {
+        params.push(format!("-f {}", fields.join(",")));
     }
     print_command_echo("ov tree", &params.join(" "), ctx.config.echo_command);
 
@@ -1733,6 +1749,7 @@ pub async fn handle_tree(
         node_limit,
         level_limit,
         &tags,
+        fields.iter().any(|field| field == "tags"),
         ctx.output_format,
         ctx.compact,
     )
@@ -1834,8 +1851,14 @@ pub async fn handle_grep(
     node_limit: i32,
     level_limit: i32,
     tags: Vec<String>,
+    fields: Vec<String>,
     ctx: CliContext,
 ) -> Result<()> {
+    if fields.iter().any(|field| field != "tags") {
+        return Err(Error::Client(
+            "--fields currently supports only 'tags'".to_string(),
+        ));
+    }
     // Prevent grep from root directory to avoid excessive server load and timeouts
     if uri == "viking://" || uri == "viking:///" {
         return Err(Error::Client(format!(
@@ -1857,6 +1880,9 @@ pub async fn handle_grep(
     if !tags.is_empty() {
         params.push(format!("--tags {}", tags.join(",")));
     }
+    if !fields.is_empty() {
+        params.push(format!("-f {}", fields.join(",")));
+    }
     params.push(format!("\"{}\"", pattern));
     print_command_echo("ov grep", &params.join(" "), ctx.config.echo_command);
     let client = ctx.get_client();
@@ -1869,6 +1895,7 @@ pub async fn handle_grep(
         node_limit,
         level_limit,
         &tags,
+        fields.iter().any(|field| field == "tags"),
         ctx.output_format,
         ctx.compact,
     )

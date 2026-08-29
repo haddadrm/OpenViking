@@ -104,7 +104,7 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}&tags={k=v}
+GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}&tags={k=v}&include_tags={bool}
 ```
 
 ```bash
@@ -126,15 +126,21 @@ curl -G "http://localhost:1933/api/v1/fs/ls" \
   --data-urlencode "uri=viking://resources/" \
   --data-urlencode "tags=team=search" \
   --data-urlencode "tags=env=prod"
+
+# 不过滤、但在结果中携带 tags
+curl -G "http://localhost:1933/api/v1/fs/ls" \
+  -H "X-API-Key: your-key" \
+  --data-urlencode "uri=viking://resources/" \
+  --data-urlencode "include_tags=true"
 ```
 
 **CLI**
 
 ```bash
-openviking ls viking://resources/ [--simple] [--recursive] [--tags team=search,env=prod]
+openviking ls viking://resources/ [--simple] [--recursive] [--tags team=search,env=prod] [-f tags]
 
 # 在人类可读列表中显示 tags；不能与 --simple 一起使用
-openviking ls viking://resources/ --tags team=search,env=prod --fields tags
+openviking ls viking://resources/ --fields tags
 ```
 
 
@@ -176,7 +182,7 @@ openviking ls viking://resources/ --tags team=search,env=prod --fields tags
 | level_limit | int | 否 | 3 | 最大目录遍历深度 |
 | tags | string[] | 否 | 未设置 | 仅保留同时匹配全部 `k=v` 检索标签的节点 |
 
-`tags` 使用 AND 语义，并在 `node_limit` 前应用。返回的每个节点都包含 `tags`，未设置时为 `[]`。
+`tags` 使用 AND 语义，并在 `node_limit` 前应用。带 tags 过滤的响应会返回 `tags`；未过滤时需传 `include_tags=true` 才返回它们，否则会省略 tags 以避免额外的向量库读取。
 
 
 **Python HTTP SDK**
@@ -215,7 +221,7 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/tree?uri={uri}&tags={k=v}
+GET /api/v1/fs/tree?uri={uri}&tags={k=v}&include_tags={bool}
 ```
 
 ```bash
@@ -233,7 +239,7 @@ curl -G "http://localhost:1933/api/v1/fs/tree" \
 **CLI**
 
 ```bash
-openviking tree viking://resources/my-project/ --tags team=search,env=prod
+openviking tree viking://resources/my-project/ --fields tags
 ```
 
 

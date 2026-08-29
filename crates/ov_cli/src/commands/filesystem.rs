@@ -41,6 +41,7 @@ pub async fn ls(
             show_all_hidden,
             node_limit,
             tags,
+            show_tags || !tags.is_empty(),
         )
         .await?;
     output_filesystem_entries(&result, output_format, compact, false, show_tags);
@@ -56,6 +57,7 @@ pub async fn tree(
     node_limit: i32,
     level_limit: i32,
     tags: &[String],
+    show_tags: bool,
     output_format: OutputFormat,
     compact: bool,
 ) -> Result<()> {
@@ -68,9 +70,10 @@ pub async fn tree(
             node_limit,
             level_limit,
             tags,
+            show_tags || !tags.is_empty(),
         )
         .await?;
-    output_filesystem_entries(&result, output_format, compact, true, false);
+    output_filesystem_entries(&result, output_format, compact, true, show_tags);
     Ok(())
 }
 
@@ -100,7 +103,7 @@ fn render_filesystem_entries_for_table(
         return None;
     }
     if is_tree {
-        render_tree_entries_for_table(value)
+        render_tree_entries_for_table_with_tags(value, show_tags)
     } else {
         render_ls_entries_for_table_with_tags(value, show_tags)
     }
@@ -133,7 +136,12 @@ fn render_ls_entries_for_table_with_tags(value: &Value, show_tags: bool) -> Opti
     Some(lines.join("\n"))
 }
 
+#[cfg(test)]
 fn render_tree_entries_for_table(value: &Value) -> Option<String> {
+    render_tree_entries_for_table_with_tags(value, false)
+}
+
+fn render_tree_entries_for_table_with_tags(value: &Value, show_tags: bool) -> Option<String> {
     let (entries, profile) = filesystem_entries(value)?;
     let mut lines = Vec::new();
     let text_width = entry_text_width();
@@ -145,7 +153,7 @@ fn render_tree_entries_for_table(value: &Value) -> Option<String> {
     }
 
     for (index, entry) in entries.iter().enumerate() {
-        render_tree_entry(index + 1, entry, text_width, &mut lines);
+        render_tree_entry(index + 1, entry, text_width, show_tags, &mut lines);
     }
 
     append_profile_lines(profile, &mut lines);
@@ -211,7 +219,13 @@ fn render_ls_entry(
     }
 }
 
-fn render_tree_entry(rank: usize, entry: &Value, text_width: usize, lines: &mut Vec<String>) {
+fn render_tree_entry(
+    rank: usize,
+    entry: &Value,
+    text_width: usize,
+    show_tags: bool,
+    lines: &mut Vec<String>,
+) {
     let object = entry.as_object();
     let rel_path = entry_string(object, "rel_path");
     let path = rel_path
@@ -244,6 +258,28 @@ fn render_tree_entry(rank: usize, entry: &Value, text_width: usize, lines: &mut 
         &metadata.join("  "),
         text_width,
     ));
+    if show_tags {
+        let tags = entry_tags(object);
+        lines.push(format!(
+            "{indent}{TREE_INDENT}{}",
+            theme::muted(format!("tags: {tags}"))
+        ));
+    }
+}
+
+fn entry_tags(object: Option<&serde_json::Map<String, Value>>) -> String {
+    object
+        .and_then(|object| object.get("tags"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|tags| !tags.is_empty())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn entry_metadata(object: Option<&serde_json::Map<String, Value>>) -> Vec<String> {
@@ -536,6 +572,7 @@ mod tests {
     use super::{
         render_filesystem_entries_for_table, render_ls_entries_for_table,
         render_ls_entries_for_table_with_tags, render_tree_entries_for_table,
+        render_tree_entries_for_table_with_tags,
     };
     use crate::output::render_profiled_scalar_result;
     use serde_json::json;
@@ -741,6 +778,18 @@ mod tests {
 
         assert!(rendered.contains("tags: env=prod, team=search"));
         assert!(rendered.contains("tags: -"));
+    }
+
+    #[test]
+    fn tree_table_output_shows_requested_tags() {
+        let result = json!([
+            {"uri": "viking://resources/a.md", "isDir": false, "tags": ["env=prod", "team=search"]}
+        ]);
+
+        let rendered =
+            strip_ansi(&render_tree_entries_for_table_with_tags(&result, true).expect("tree"));
+
+        assert!(rendered.contains("tags: env=prod, team=search"));
     }
 
     fn strip_ansi(input: &str) -> String {

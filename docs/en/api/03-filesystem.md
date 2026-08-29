@@ -106,7 +106,7 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}&tags={k=v}
+GET /api/v1/fs/ls?uri={uri}&simple={bool}&recursive={bool}&tags={k=v}&include_tags={bool}
 ```
 
 ```bash
@@ -128,15 +128,21 @@ curl -G "http://localhost:1933/api/v1/fs/ls" \
   --data-urlencode "uri=viking://resources/" \
   --data-urlencode "tags=team=search" \
   --data-urlencode "tags=env=prod"
+
+# Include tags without filtering
+curl -G "http://localhost:1933/api/v1/fs/ls" \
+  -H "X-API-Key: your-key" \
+  --data-urlencode "uri=viking://resources/" \
+  --data-urlencode "include_tags=true"
 ```
 
 **CLI**
 
 ```bash
-openviking ls viking://resources/ [--simple] [--recursive] [--tags team=search,env=prod]
+openviking ls viking://resources/ [--simple] [--recursive] [--tags team=search,env=prod] [-f tags]
 
 # Show tags in human-readable output; cannot be combined with --simple
-openviking ls viking://resources/ --tags team=search,env=prod --fields tags
+openviking ls viking://resources/ --fields tags
 ```
 
 
@@ -178,7 +184,7 @@ Get directory tree structure.
 | level_limit | int | No | 3 | Maximum directory depth to traverse |
 | tags | string[] | No | Unset | Retain only nodes matching every supplied `k=v` retrieval tag |
 
-`tags` uses AND semantics and is applied before `node_limit`. Every returned node includes `tags`, with `[]` when unset.
+`tags` uses AND semantics and is applied before `node_limit`. Filtered responses include `tags`. For unfiltered requests, use `include_tags=true` to include them; otherwise tags are omitted to avoid an extra vector-store read.
 
 
 **Python HTTP SDK**
@@ -217,7 +223,7 @@ for _, entry := range entries {
 **HTTP API**
 
 ```
-GET /api/v1/fs/tree?uri={uri}&tags={k=v}
+GET /api/v1/fs/tree?uri={uri}&tags={k=v}&include_tags={bool}
 ```
 
 ```bash
@@ -235,7 +241,7 @@ curl -G "http://localhost:1933/api/v1/fs/tree" \
 **CLI**
 
 ```bash
-openviking tree viking://resources/my-project/ --tags team=search,env=prod
+openviking tree viking://resources/my-project/ --fields tags
 ```
 
 

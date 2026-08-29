@@ -232,7 +232,9 @@ async def test_grep_projects_tags_for_each_match(request_context):
             ]
 
     service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
-    result = await service.grep("viking://resources", "needle", ctx=request_context)
+    result = await service.grep(
+        "viking://resources", "needle", ctx=request_context, include_tags=True
+    )
 
     assert result["matches"] == [
         {
@@ -251,6 +253,83 @@ async def test_grep_projects_tags_for_each_match(request_context):
 
 
 @pytest.mark.asyncio
+async def test_grep_skips_tag_projection_without_tags_or_include_tags(request_context):
+    matches = [{"uri": "viking://resources/a.md", "line": 1, "content": "needle"}]
+    viking_fs = SimpleNamespace(grep=AsyncMock(return_value={"matches": matches, "count": 1}))
+
+    class FakeVikingDB:
+        async def filter(self, **_kwargs):
+            raise AssertionError("plain grep should not load tags")
+
+    service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
+
+    result = await service.grep("viking://resources", "needle", ctx=request_context)
+
+    assert result["matches"] == matches
+
+
+@pytest.mark.asyncio
+async def test_grep_projects_tags_when_include_tags_is_requested(request_context):
+    matches = [{"uri": "viking://resources/a.md", "line": 1, "content": "needle"}]
+    viking_fs = SimpleNamespace(grep=AsyncMock(return_value={"matches": matches, "count": 1}))
+
+    class FakeVikingDB:
+        async def filter(self, **_kwargs):
+            return [{"uri": "viking://resources/a.md", "level": 2, "search_tags": ["env=prod"]}]
+
+    service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
+
+    result = await service.grep(
+        "viking://resources", "needle", ctx=request_context, include_tags=True
+    )
+
+    assert result["matches"] == [{**matches[0], "tags": ["env=prod"]}]
+
+
+@pytest.mark.asyncio
+async def test_ls_and_tree_skip_tag_projection_without_tags_or_include_tags(request_context):
+    entries = [{"uri": "viking://resources/a.md", "isDir": False}]
+    viking_fs = SimpleNamespace(
+        ls=AsyncMock(return_value=entries),
+        tree=AsyncMock(return_value=entries),
+    )
+
+    class FakeVikingDB:
+        async def filter(self, **_kwargs):
+            raise AssertionError("plain filesystem reads should not load tags")
+
+    service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
+
+    assert await service.ls("viking://resources", ctx=request_context) == entries
+    assert await service.tree("viking://resources", ctx=request_context) == entries
+
+
+@pytest.mark.asyncio
+async def test_grep_passes_tags_to_vikingfs_without_prequerying_vikingdb(request_context):
+    viking_fs = SimpleNamespace(grep=AsyncMock(return_value={"matches": [], "count": 0}))
+
+    class FakeVikingDB:
+        async def filter(self, **_kwargs):
+            raise AssertionError("tagged grep should not pre-query VikingDB")
+
+    service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
+    await service.grep(
+        "viking://resources",
+        "needle",
+        ctx=request_context,
+        tags=["team=search", "env=prod"],
+    )
+
+    assert viking_fs.grep.await_args.kwargs["tag_filter"] == {
+        "op": "and",
+        "conds": [
+            {"op": "must", "field": "search_tags", "conds": ["team=search"]},
+            {"op": "must", "field": "search_tags", "conds": ["env=prod"]},
+        ],
+    }
+
+
+@pytest.mark.asyncio
 async def test_ls_projects_tags_filters_with_and_before_applying_node_limit(request_context):
     entries = [
         {"uri": "viking://resources/a.md", "isDir": False},
@@ -263,8 +342,16 @@ async def test_ls_projects_tags_filters_with_and_before_applying_node_limit(requ
         async def filter(self, **_kwargs):
             return [
                 {"uri": "viking://resources/a.md", "level": 2, "search_tags": ["team=search"]},
-                {"uri": "viking://resources/b.md", "level": 2, "search_tags": ["team=search", "env=prod"]},
-                {"uri": "viking://resources/c.md", "level": 2, "search_tags": ["team=search", "env=prod"]},
+                {
+                    "uri": "viking://resources/b.md",
+                    "level": 2,
+                    "search_tags": ["team=search", "env=prod"],
+                },
+                {
+                    "uri": "viking://resources/c.md",
+                    "level": 2,
+                    "search_tags": ["team=search", "env=prod"],
+                },
             ]
 
     service = FSService(viking_fs=viking_fs, vikingdb=FakeVikingDB())
@@ -275,7 +362,9 @@ async def test_ls_projects_tags_filters_with_and_before_applying_node_limit(requ
         node_limit=1,
     )
 
-    assert result == [{"uri": "viking://resources/b.md", "isDir": False, "tags": ["team=search", "env=prod"]}]
+    assert result == [
+        {"uri": "viking://resources/b.md", "isDir": False, "tags": ["team=search", "env=prod"]}
+    ]
     assert viking_fs.ls.await_args.kwargs["node_limit"] is None
 
 
@@ -288,7 +377,11 @@ async def test_tree_projects_directory_tags_from_abstract_and_overview_records(r
         async def filter(self, **_kwargs):
             return [
                 {"uri": "viking://resources/docs", "level": 0, "search_tags": ["team=search"]},
-                {"uri": "viking://resources/docs", "level": 1, "search_tags": ["env=prod", "team=search"]},
+                {
+                    "uri": "viking://resources/docs",
+                    "level": 1,
+                    "search_tags": ["env=prod", "team=search"],
+                },
                 {"uri": "viking://resources/docs", "level": 2, "search_tags": ["ignored=true"]},
             ]
 
@@ -299,7 +392,9 @@ async def test_tree_projects_directory_tags_from_abstract_and_overview_records(r
         tags=["team=search", "env=prod"],
     )
 
-    assert result == [{"uri": "viking://resources/docs", "isDir": True, "tags": ["team=search", "env=prod"]}]
+    assert result == [
+        {"uri": "viking://resources/docs", "isDir": True, "tags": ["team=search", "env=prod"]}
+    ]
     assert viking_fs.tree.await_args.kwargs["node_limit"] is None
 
 

@@ -605,6 +605,7 @@ impl HttpClient {
         show_all_hidden: bool,
         node_limit: i32,
         tags: &[String],
+        include_tags: bool,
     ) -> Result<serde_json::Value> {
         let mut params = vec![
             ("uri".to_string(), uri.to_string()),
@@ -615,6 +616,9 @@ impl HttpClient {
             ("show_all_hidden".to_string(), show_all_hidden.to_string()),
             ("node_limit".to_string(), node_limit.to_string()),
         ];
+        if include_tags {
+            params.push(("include_tags".to_string(), "true".to_string()));
+        }
         for tag in tags {
             params.push(("tags".to_string(), tag.clone()));
         }
@@ -630,6 +634,7 @@ impl HttpClient {
         node_limit: i32,
         level_limit: i32,
         tags: &[String],
+        include_tags: bool,
     ) -> Result<serde_json::Value> {
         let mut params = vec![
             ("uri".to_string(), uri.to_string()),
@@ -639,6 +644,9 @@ impl HttpClient {
             ("node_limit".to_string(), node_limit.to_string()),
             ("level_limit".to_string(), level_limit.to_string()),
         ];
+        if include_tags {
+            params.push(("include_tags".to_string(), "true".to_string()));
+        }
         for tag in tags {
             params.push(("tags".to_string(), tag.clone()));
         }
@@ -770,6 +778,7 @@ impl HttpClient {
         node_limit: i32,
         level_limit: i32,
         tags: &[String],
+        include_tags: bool,
     ) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "uri": uri,
@@ -779,6 +788,7 @@ impl HttpClient {
             "node_limit": node_limit,
             "level_limit": level_limit,
             "tags": (!tags.is_empty()).then(|| tags),
+            "include_tags": include_tags.then_some(true),
         });
         self.post("/api/v1/search/grep", &body).await
     }
@@ -2291,6 +2301,7 @@ mod tests {
                 false,
                 1,
                 &[],
+                false,
             )
             .await
             .expect("ls request should succeed");
@@ -2299,6 +2310,7 @@ mod tests {
         assert!(request.starts_with("GET /api/v1/fs/ls?"));
         assert!(!request.contains("tz="));
         assert!(!request.contains("include_mod_time_iso="));
+        assert!(!request.contains("include_tags="));
     }
 
     #[tokio::test]
@@ -2417,7 +2429,7 @@ mod tests {
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
 
         client
-            .tree("viking://resources", "agent", 256, false, 1, 3, &[])
+            .tree("viking://resources", "agent", 256, false, 1, 3, &[], false)
             .await
             .expect("tree request should succeed");
 
@@ -2425,6 +2437,7 @@ mod tests {
         assert!(request.starts_with("GET /api/v1/fs/tree?"));
         assert!(!request.contains("tz="));
         assert!(!request.contains("include_mod_time_iso="));
+        assert!(!request.contains("include_tags="));
     }
 
     #[tokio::test]

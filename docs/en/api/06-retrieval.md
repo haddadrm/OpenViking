@@ -893,7 +893,12 @@ openviking grep "TODO" --uri viking://resources --level-limit 3
 
 # Search only files carrying every tag
 openviking grep "TODO" --uri viking://resources --tags team=search,env=prod
+
+# Include tags in human-readable results without filtering
+openviking grep "TODO" --uri viking://resources --fields tags
 ```
+
+For HTTP `POST /api/v1/search/grep`, set `include_tags: true` to include tags without filtering. A request with `tags` always returns tags for the matched files.
 
 **Response Example**
 

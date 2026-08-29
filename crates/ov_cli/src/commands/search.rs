@@ -638,6 +638,7 @@ pub async fn grep(
     node_limit: i32,
     level_limit: i32,
     tags: &[String],
+    show_tags: bool,
     output_format: OutputFormat,
     compact: bool,
 ) -> Result<()> {
@@ -650,21 +651,37 @@ pub async fn grep(
             node_limit,
             level_limit,
             tags,
+            show_tags || !tags.is_empty(),
         )
         .await?;
-    output_grep_results(&result, output_format, compact);
+    output_grep_results(&result, output_format, compact, show_tags);
     Ok(())
 }
 
-fn output_grep_results(result: &Value, output_format: OutputFormat, compact: bool) {
-    if let Some(rendered) = render_grep_output_for_table(result, output_format) {
+fn output_grep_results(
+    result: &Value,
+    output_format: OutputFormat,
+    compact: bool,
+    show_tags: bool,
+) {
+    if let Some(rendered) = render_grep_output_for_table_with_tags(result, output_format, show_tags)
+    {
         println!("{rendered}");
     } else {
         output_success(result, output_format, compact);
     }
 }
 
+#[cfg(test)]
 fn render_grep_output_for_table(value: &Value, output_format: OutputFormat) -> Option<String> {
+    render_grep_output_for_table_with_tags(value, output_format, false)
+}
+
+fn render_grep_output_for_table_with_tags(
+    value: &Value,
+    output_format: OutputFormat,
+    show_tags: bool,
+) -> Option<String> {
     if matches!(output_format, OutputFormat::Json) {
         return None;
     }
@@ -702,14 +719,20 @@ fn render_grep_output_for_table(value: &Value, output_format: OutputFormat) -> O
 
     for (index, item) in matches.iter().enumerate() {
         lines.push(String::new());
-        render_grep_match_card(index + 1, item, text_width, &mut lines);
+        render_grep_match_card(index + 1, item, text_width, show_tags, &mut lines);
     }
 
     append_profile_lines(profile, &mut lines);
     Some(lines.join("\n"))
 }
 
-fn render_grep_match_card(rank: usize, item: &Value, text_width: usize, lines: &mut Vec<String>) {
+fn render_grep_match_card(
+    rank: usize,
+    item: &Value,
+    text_width: usize,
+    show_tags: bool,
+    lines: &mut Vec<String>,
+) {
     let object = item.as_object();
     let line_number = object
         .and_then(|object| object.get("line"))
@@ -744,6 +767,24 @@ fn render_grep_match_card(rank: usize, item: &Value, text_width: usize, lines: &
         for line in wrap_display_text(content, text_width, SEARCH_MAX_ABSTRACT_LINES) {
             lines.push(format!("{SEARCH_INDENT}{}", theme::body(line)));
         }
+    }
+    if show_tags {
+        let tags = object
+            .and_then(|object| object.get("tags"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|tags| !tags.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+        lines.push(format!(
+            "{SEARCH_INDENT}{}",
+            theme::muted(format!("tags: {tags}"))
+        ));
     }
 }
 
@@ -1103,6 +1144,28 @@ mod tests {
                 "line should not sprawl horizontally: {line}"
             );
         }
+    }
+
+    #[test]
+    fn grep_table_output_shows_requested_tags() {
+        let result = json!({
+            "matches": [{
+                "line": 1,
+                "uri": "viking://resources/a.md",
+                "content": "needle",
+                "tags": ["env=prod", "team=search"]
+            }],
+            "count": 1,
+            "match_count": 1,
+            "files_scanned": 1
+        });
+
+        let rendered = strip_ansi(
+            &render_grep_output_for_table_with_tags(&result, OutputFormat::Table, true)
+                .expect("grep"),
+        );
+
+        assert!(rendered.contains("tags: env=prod, team=search"));
     }
 
     #[test]

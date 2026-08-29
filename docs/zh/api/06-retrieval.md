@@ -894,7 +894,12 @@ openviking grep "TODO" --uri viking://resources --level-limit 3
 
 # 只搜索同时匹配所有 tags 的文件
 openviking grep "TODO" --uri viking://resources --tags team=search,env=prod
+
+# 不过滤、但在人类可读结果中显示 tags
+openviking grep "TODO" --uri viking://resources --fields tags
 ```
+
+HTTP `POST /api/v1/search/grep` 在不做过滤时可传 `include_tags: true` 返回 tags；传入 `tags` 过滤时会始终返回命中文件的 tags。
 
 **响应示例**
 

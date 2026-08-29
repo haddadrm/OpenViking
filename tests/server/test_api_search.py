@@ -1024,6 +1024,30 @@ async def test_grep_forwards_tags_to_filesystem_service(monkeypatch):
     assert seen["tags"] == ["team=search", "env=prod"]
 
 
+@pytest.mark.asyncio
+async def test_grep_forwards_include_tags_to_filesystem_service(monkeypatch):
+    seen = {}
+
+    async def fake_grep(uri, pattern, **kwargs):
+        seen.update(uri=uri, pattern=pattern, **kwargs)
+        return {"matches": [], "count": 0, "match_count": 0, "files_scanned": 0}
+
+    monkeypatch.setattr(
+        search_router,
+        "get_service",
+        lambda: SimpleNamespace(fs=SimpleNamespace(grep=fake_grep)),
+    )
+
+    await search_router.grep(
+        search_router.GrepRequest(
+            uri="viking://resources", pattern="OpenViking", include_tags=True
+        ),
+        _ctx=RequestContext(user=UserIdentifier("acct", "alice"), role=Role.USER),
+    )
+
+    assert seen["include_tags"] is True
+
+
 async def test_grep_case_insensitive(client_with_resource):
     client, uri = client_with_resource
     parent_uri = "/".join(uri.split("/")[:-1]) + "/"

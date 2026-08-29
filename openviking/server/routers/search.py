@@ -95,9 +95,7 @@ def _resolve_search_filter(
         raise InvalidArgumentError(str(exc)) from exc
 
 
-def _resolve_uri_or_uris(
-    uri: Union[str, List[str]], ctx: RequestContext
-) -> Union[str, List[str]]:
+def _resolve_uri_or_uris(uri: Union[str, List[str]], ctx: RequestContext) -> Union[str, List[str]]:
     """Resolve path variables in a single URI or list of URIs."""
     if isinstance(uri, list):
         return [validate_request_viking_uri(resolve_path_variables(u), ctx) for u in uri]
@@ -311,6 +309,7 @@ class GrepRequest(BaseModel):
     node_limit: Optional[int] = 256
     level_limit: int = 10
     tags: Optional[List[str]] = None
+    include_tags: bool = False
 
 
 class GlobRequest(BaseModel):
@@ -535,6 +534,7 @@ async def grep(
             node_limit=request.node_limit,
             level_limit=request.level_limit,
             tags=request.tags,
+            include_tags=request.include_tags,
         )
     except AGFSNotFoundError:
         raise NotFoundError(resolved_uri, "file")

@@ -598,6 +598,15 @@ enum Commands {
             help_heading = "Common options"
         )]
         tags: Vec<String>,
+        /// Extra fields for human-readable output (currently: tags)
+        #[arg(
+            short = 'f',
+            long,
+            value_delimiter = ',',
+            value_name = "field",
+            help_heading = "Common options"
+        )]
+        fields: Vec<String>,
     },
     /// [Data] Create directory
     Mkdir {
@@ -959,6 +968,15 @@ enum Commands {
             help_heading = "Common options"
         )]
         tags: Vec<String>,
+        /// Extra fields for human-readable output (currently: tags)
+        #[arg(
+            short = 'f',
+            long,
+            value_delimiter = ',',
+            value_name = "field",
+            help_heading = "Common options"
+        )]
+        fields: Vec<String>,
     },
     /// [Data] Run file glob pattern search
     Glob {
@@ -3544,7 +3562,20 @@ async fn main() {
             node_limit,
             level_limit,
             tags,
-        } => handlers::handle_tree(uri, abs_limit, all, node_limit, level_limit, tags, ctx).await,
+            fields,
+        } => {
+            handlers::handle_tree(
+                uri,
+                abs_limit,
+                all,
+                node_limit,
+                level_limit,
+                tags,
+                fields,
+                ctx,
+            )
+            .await
+        }
         Commands::Mkdir { uri, description } => handlers::handle_mkdir(uri, description, ctx).await,
         Commands::Rm {
             uri,
@@ -3771,6 +3802,7 @@ async fn main() {
             node_limit,
             level_limit,
             tags,
+            fields,
         } => {
             handlers::handle_grep(
                 uri,
@@ -3780,6 +3812,7 @@ async fn main() {
                 node_limit,
                 level_limit,
                 tags,
+                fields,
                 ctx,
             )
             .await
@@ -4631,17 +4664,33 @@ mod tests {
             "viking://resources",
             "--tags",
             "team=search,env=prod",
+            "-f",
+            "tags",
         ])
         .expect("tree tags should parse");
         match tree.command {
-            Commands::Tree { tags, .. } => assert_eq!(tags, vec!["team=search", "env=prod"]),
+            Commands::Tree { tags, fields, .. } => {
+                assert_eq!(tags, vec!["team=search", "env=prod"]);
+                assert_eq!(fields, vec!["tags"]);
+            }
             _ => panic!("expected tree command"),
         }
 
-        let grep = Cli::try_parse_from(["ov", "grep", "needle", "--tags", "team=search,env=prod"])
-            .expect("grep tags should parse");
+        let grep = Cli::try_parse_from([
+            "ov",
+            "grep",
+            "needle",
+            "--tags",
+            "team=search,env=prod",
+            "-f",
+            "tags",
+        ])
+        .expect("grep tags should parse");
         match grep.command {
-            Commands::Grep { tags, .. } => assert_eq!(tags, vec!["team=search", "env=prod"]),
+            Commands::Grep { tags, fields, .. } => {
+                assert_eq!(tags, vec!["team=search", "env=prod"]);
+                assert_eq!(fields, vec!["tags"]);
+            }
             _ => panic!("expected grep command"),
         }
     }

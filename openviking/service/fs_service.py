@@ -27,7 +27,7 @@ from openviking.storage.abstract_overview import (
 )
 from openviking.storage.acl import CreatorAclGrant
 from openviking.storage.content_write import ContentWriteCoordinator
-from openviking.storage.expr import And, Eq, In, Or, PathScope, RawDSL
+from openviking.storage.expr import And, Eq, In, Or
 from openviking.storage.queuefs import SemanticMsg, get_queue_manager
 from openviking.storage.queuefs.semantic_msg import build_semantic_coalesce_key
 from openviking.storage.queuefs.semantic_ops.freshness_policy import FreshnessAction
@@ -123,10 +123,14 @@ class FSService:
 
         tags_by_uri: Dict[str, List[str]] = {}
         if self._vikingdb:
-            uris = list(dict.fromkeys(str(entry.get("uri") or "") for entry in entries if entry.get("uri")))
+            uris = list(
+                dict.fromkeys(str(entry.get("uri") or "") for entry in entries if entry.get("uri"))
+            )
             if uris:
                 records = await VikingDBManagerProxy(self._vikingdb, ctx).filter(
-                    filter=And([Or([Eq("uri", item_uri) for item_uri in uris]), In("level", [0, 1, 2])]),
+                    filter=And(
+                        [Or([Eq("uri", item_uri) for item_uri in uris]), In("level", [0, 1, 2])]
+                    ),
                     limit=max(len(uris) * 3, 1),
                     output_fields=["uri", "level", "search_tags"],
                 )
@@ -137,10 +141,14 @@ class FSService:
                     uri = str(entry.get("uri") or "")
                     levels = {0, 1} if entry.get("isDir", False) else {2}
                     result: List[str] = []
-                    for record in sorted(records_by_uri.get(uri, []), key=lambda item: item.get("level", 99)):
+                    for record in sorted(
+                        records_by_uri.get(uri, []), key=lambda item: item.get("level", 99)
+                    ):
                         if record.get("level") not in levels:
                             continue
-                        for tag in normalize_search_tags(record.get("search_tags"), discard_invalid=True):
+                        for tag in normalize_search_tags(
+                            record.get("search_tags"), discard_invalid=True
+                        ):
                             if tag not in result:
                                 result.append(tag)
                     tags_by_uri[uri] = result
@@ -168,6 +176,7 @@ class FSService:
         sort_by: Optional[str] = None,
         sort_order: str = "asc",
         tags: Optional[List[str]] = None,
+        include_tags: bool = False,
     ) -> List[Any]:
         """List directory contents.
 
@@ -205,7 +214,8 @@ class FSService:
                     sort_by=sort_by,
                     sort_order=sort_order,
                 )
-            entries = await self._attach_and_filter_tags(entries, ctx, tags)
+            if tags or include_tags:
+                entries = await self._attach_and_filter_tags(entries, ctx, tags)
             return [e.get("uri", "") for e in entries[:node_limit]]
 
         if recursive:
@@ -229,7 +239,9 @@ class FSService:
                 sort_by=sort_by,
                 sort_order=sort_order,
             )
-        return (await self._attach_and_filter_tags(entries, ctx, tags))[:node_limit]
+        if tags or include_tags:
+            entries = await self._attach_and_filter_tags(entries, ctx, tags)
+        return entries[:node_limit]
 
     async def mkdir(
         self,
@@ -276,9 +288,7 @@ class FSService:
             overview="",
             context_type=context_type_for_uri(directory_uri),
             ctx=ctx,
-            creator_acl_grant=(
-                CreatorAclGrant.DIRECT if not directory_preexisting else None
-            ),
+            creator_acl_grant=(CreatorAclGrant.DIRECT if not directory_preexisting else None),
             include_overview=False,
         )
 
@@ -614,6 +624,7 @@ class FSService:
         node_limit: int = 1000,
         level_limit: int = 3,
         tags: Optional[List[str]] = None,
+        include_tags: bool = False,
     ) -> List[Dict[str, Any]]:
         """Get directory tree."""
         viking_fs = self._ensure_initialized()
@@ -626,7 +637,9 @@ class FSService:
             node_limit=None if tags else node_limit,
             level_limit=level_limit,
         )
-        return (await self._attach_and_filter_tags(result, ctx, tags))[:node_limit]
+        if tags or include_tags:
+            result = await self._attach_and_filter_tags(result, ctx, tags)
+        return result[:node_limit]
 
     async def stat(self, uri: str, ctx: RequestContext) -> Dict[str, Any]:
         """Get resource status."""
@@ -696,43 +709,31 @@ class FSService:
         node_limit: Optional[int] = None,
         level_limit: int = 10,
         tags: Optional[List[str]] = None,
+        include_tags: bool = False,
     ) -> Dict:
         """Content search."""
         viking_fs = self._ensure_initialized()
         normalized_tags = normalize_search_tags(tags)
-        allowed_uris: Optional[set[str]] = None
+        tag_filter = None
         if normalized_tags:
-            if not self._vikingdb:
-                return {"matches": [], "count": 0, "match_count": 0, "files_scanned": 0}
             from openviking.utils.tags import build_search_tags_filter
 
-            records = await VikingDBManagerProxy(self._vikingdb, ctx).filter(
-                filter=And([
-                    PathScope("uri", uri, depth=level_limit),
-                    In("level", [2]),
-                    RawDSL(build_search_tags_filter(normalized_tags)),
-                ]),
-                limit=100000,
-                output_fields=["uri"],
-            )
-            allowed_uris = {str(record["uri"]) for record in records if record.get("uri")}
-            if not allowed_uris:
-                return {"matches": [], "count": 0, "match_count": 0, "files_scanned": 0}
+            tag_filter = build_search_tags_filter(normalized_tags)
         kwargs = {
             "exclude_uri": exclude_uri,
             "case_insensitive": case_insensitive,
             "node_limit": node_limit,
             "level_limit": level_limit,
             "ctx": ctx,
-            "allowed_uris": allowed_uris,
+            "tag_filter": tag_filter,
         }
         if _may_include_memory_content(uri):
             kwargs["content_transform"] = _visible_grep_content
         result = await viking_fs.grep(uri, pattern, **kwargs)
         result = dict(result)
-        result["matches"] = await self._attach_and_filter_tags(
-            result.get("matches", []), ctx, tags=None
-        )
+        matches = result.get("matches", [])
+        if (normalized_tags or include_tags) and any("tags" not in match for match in matches):
+            result["matches"] = await self._attach_and_filter_tags(matches, ctx, tags=None)
         return result
 
     async def glob(
@@ -830,9 +831,7 @@ class FSService:
     ) -> Dict[str, Any]:
         return await self._ensure_initialized().grant_acl(uri, principal, level, ctx=ctx)
 
-    async def revoke_acl(
-        self, uri: str, principal: str, ctx: RequestContext
-    ) -> Dict[str, Any]:
+    async def revoke_acl(self, uri: str, principal: str, ctx: RequestContext) -> Dict[str, Any]:
         return await self._ensure_initialized().revoke_acl(uri, principal, ctx=ctx)
 
     async def delete_acl(self, uri: str, ctx: RequestContext) -> Dict[str, Any]:
