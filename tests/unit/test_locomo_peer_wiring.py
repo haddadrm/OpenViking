@@ -81,8 +81,8 @@ async def test_viking_ingest_uses_message_peer_id(monkeypatch):
         async def initialize(self):
             return None
 
-        async def create_session(self, memory_policy=None):
-            calls.append(("create_session", memory_policy))
+        async def create_session(self, session_id=None, options=None):
+            calls.append(("create_session", options))
             return {"session_id": "sess-1"}
 
         async def get_session(self, session_id):
@@ -90,8 +90,9 @@ async def test_viking_ingest_uses_message_peer_id(monkeypatch):
             return {"commit_count": 0}
 
         async def add_message(
-            self, session_id=None, role=None, parts=None, created_at=None, peer_id=None
+            self, session_id=None, role=None, content=None, parts=None, options=None, peer_id=None
         ):
+            option_values = options or {}
             calls.append(
                 (
                     "add_message",
@@ -99,14 +100,14 @@ async def test_viking_ingest_uses_message_peer_id(monkeypatch):
                         "session_id": session_id,
                         "role": role,
                         "parts": parts,
-                        "created_at": created_at,
-                        "peer_id": peer_id,
+                        "created_at": option_values.get("created_at"),
+                        "peer_id": option_values.get("peer_id", peer_id),
                     },
                 )
             )
 
-        async def commit_session(self, session_id, telemetry=True, memory_policy=None):
-            calls.append(("commit_session", memory_policy))
+        async def commit_session(self, session_id, telemetry=False, *, keep_recent_count=0):
+            calls.append(("commit_session", telemetry))
             return {"status": "accepted", "task_id": None, "trace_id": "trace-1"}
 
         async def close(self):
